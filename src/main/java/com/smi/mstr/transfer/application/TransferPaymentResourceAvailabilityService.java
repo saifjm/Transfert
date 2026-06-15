@@ -3,6 +3,7 @@ package com.smi.mstr.transfer.application;
 import com.smi.mstr.transfer.application.payment.PaymentResourceCommand;
 import com.smi.mstr.transfer.application.payment.PaymentResourceAvailabilityClient;
 import com.smi.mstr.transfer.application.payment.PaymentSecurityCalculationService;
+import com.smi.mstr.transfer.application.payment.strategy.PaymentModalityHandlerRegistry;
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
 import com.smi.mstr.transfer.domain.entity.TrPaymentModality;
 import com.smi.mstr.transfer.domain.enums.OperationEventType;
@@ -29,6 +30,7 @@ public class TransferPaymentResourceAvailabilityService {
     private final PaymentSecurityCalculationService calculationService;
     private final PaymentResourceAvailabilityClient availabilityClient;
     private final TransferOperationEventService eventService;
+    private final PaymentModalityHandlerRegistry handlerRegistry;
 
     @Transactional
     public PaymentResourceAvailabilityReport checkAvailability(
@@ -42,7 +44,7 @@ public class TransferPaymentResourceAvailabilityService {
 
         List<PaymentResourceAvailabilityItemDto> results = operation.getPaymentModalities()
                 .stream()
-                .map(modality -> checkOne(modality, checkedAt))
+                .map(modality -> checkOne(operation, modality, checkedAt))
                 .toList();
 
         PaymentResourceAvailabilityStatus overallStatus = resolveOverallStatus(results);
@@ -70,10 +72,13 @@ public class TransferPaymentResourceAvailabilityService {
     }
 
     private PaymentResourceAvailabilityItemDto checkOne(
+            MvtTrOperation operation,
             TrPaymentModality modality,
             LocalDateTime checkedAt
     ) {
-        PaymentResourceCommand command = calculationService.buildAvailabilityCommand(modality);
+        PaymentResourceCommand command = handlerRegistry
+                .getHandler(modality.getModalityType())
+                .buildAvailabilityCommand(operation, modality);
 
         PaymentResourceAvailabilityItemDto result = availabilityClient.check(command);
 

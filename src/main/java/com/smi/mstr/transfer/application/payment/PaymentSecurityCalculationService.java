@@ -1,6 +1,8 @@
 package com.smi.mstr.transfer.application.payment;
 
 import com.smi.mstr.transfer.domain.entity.TrPaymentModality;
+import com.smi.mstr.transfer.domain.enums.PaymentImpactAction;
+import com.smi.mstr.transfer.domain.enums.PaymentImpactTarget;
 import com.smi.mstr.transfer.domain.enums.PaymentModalityType;
 import com.smi.mstr.transfer.domain.enums.PaymentResourceType;
 import org.springframework.stereotype.Service;
@@ -19,19 +21,34 @@ public class PaymentSecurityCalculationService {
 
     public PaymentResourceCommand buildAvailabilityCommand(TrPaymentModality modality) {
         PaymentResourceType resourceType = resourceResolver.resolveResourceType(modality);
+        PaymentImpactTarget impactTarget = resolveImpactTarget(modality);
+        PaymentImpactAction impactAction = resolveImpactAction(modality);
         String resourceRef = resourceResolver.resolveResourceRef(modality);
+
+        BigDecimal counterValueAmount = calculateCounterValue(modality);
+        String counterValueCurrency = resolveCounterValueCurrency(modality);
 
         BigDecimal amountToCheck = resolveAmountToSecure(modality, BigDecimal.ZERO);
         String currencyToCheck = resolveCurrencyToSecure(modality);
 
         return new PaymentResourceCommand(
                 modality.getModalityId(),
+
                 resourceType,
+                impactTarget,
+                impactAction,
+
                 resourceRef,
+
                 amountToCheck,
                 currencyToCheck,
+
                 modality.getTargetAmount(),
-                modality.getTargetCurrency()
+                modality.getTargetCurrency(),
+
+                modality.getFxRate(),
+                counterValueAmount,
+                counterValueCurrency
         );
     }
 
@@ -41,9 +58,13 @@ public class PaymentSecurityCalculationService {
             String estimatedFeesCurrency
     ) {
         PaymentResourceType resourceType = resourceResolver.resolveResourceType(modality);
+        PaymentImpactTarget impactTarget = resolveImpactTarget(modality);
+        PaymentImpactAction impactAction = resolveImpactAction(modality);
         String resourceRef = resourceResolver.resolveResourceRef(modality);
 
-        BigDecimal fees = estimatedFeesAmount == null ? BigDecimal.ZERO : estimatedFeesAmount;
+        BigDecimal fees = estimatedFeesAmount == null
+                ? BigDecimal.ZERO
+                : estimatedFeesAmount;
 
         BigDecimal counterValueAmount = calculateCounterValue(modality);
         String counterValueCurrency = resolveCounterValueCurrency(modality);
@@ -53,7 +74,11 @@ public class PaymentSecurityCalculationService {
 
         return new PaymentSecurityCommand(
                 modality.getModalityId(),
+
                 resourceType,
+                impactTarget,
+                impactAction,
+
                 resourceRef,
 
                 modality.getTargetAmount(),
@@ -71,15 +96,56 @@ public class PaymentSecurityCalculationService {
         );
     }
 
+    private PaymentImpactTarget resolveImpactTarget(TrPaymentModality modality) {
+        return switch (modality.getModalityType()) {
+            case TND_FX_PURCHASE_NORMAL,
+                 TND_FX_PURCHASE_NEGOTIATED,
+                 DIRECT_FOREIGN_CURRENCY_ACCOUNT_DEBIT,
+                 CURRENCY_ARBITRAGE -> PaymentImpactTarget.ACCOUNT;
+
+            case FORWARD_FX_CONTRACT -> PaymentImpactTarget.FORWARD_CONTRACT;
+
+            case IMPORT_FINANCING -> PaymentImpactTarget.FINANCING_FOLDER;
+
+            case FUNDS_RECEIVED_LOCAL_BANK -> PaymentImpactTarget.RECEIVED_FUNDS;
+
+            case INTERBANK_FX_COVER -> PaymentImpactTarget.INTERBANK_COVER;
+
+            case OTHER -> PaymentImpactTarget.ACCOUNT;
+        };
+    }
+
+    private PaymentImpactAction resolveImpactAction(TrPaymentModality modality) {
+        return switch (modality.getModalityType()) {
+            case TND_FX_PURCHASE_NORMAL,
+                 DIRECT_FOREIGN_CURRENCY_ACCOUNT_DEBIT,
+                 CURRENCY_ARBITRAGE -> PaymentImpactAction.BLOCK_AMOUNT;
+
+            case TND_FX_PURCHASE_NEGOTIATED -> PaymentImpactAction.BLOCK_AMOUNT;
+
+            case FORWARD_FX_CONTRACT -> PaymentImpactAction.RESERVE_CONTRACT;
+
+            case IMPORT_FINANCING -> PaymentImpactAction.RESERVE_FINANCING_AMOUNT;
+
+            case FUNDS_RECEIVED_LOCAL_BANK -> PaymentImpactAction.RESERVE_RECEIVED_FUNDS;
+
+            case INTERBANK_FX_COVER -> PaymentImpactAction.RESERVE_INTERBANK_COVER;
+
+            case OTHER -> PaymentImpactAction.BLOCK_AMOUNT;
+        };
+    }
+
     private BigDecimal resolveAmountToSecure(
             TrPaymentModality modality,
             BigDecimal estimatedFeesAmount
     ) {
         if (requiresCounterValue(modality)) {
             BigDecimal counterValue = calculateCounterValue(modality);
+
             if (counterValue == null) {
-                return modality.getTargetAmount();
+                return safeAmount(modality.getTargetAmount()).add(estimatedFeesAmount);
             }
+
             return counterValue.add(estimatedFeesAmount);
         }
 
@@ -87,11 +153,12 @@ public class PaymentSecurityCalculationService {
             return modality.getSourceAmount().add(estimatedFeesAmount);
         }
 
-        return modality.getTargetAmount().add(estimatedFeesAmount);
+        return safeAmount(modality.getTargetAmount()).add(estimatedFeesAmount);
     }
 
     private String resolveCurrencyToSecure(TrPaymentModality modality) {
-        if (requiresCounterValue(modality) && modality.getDebitAccountCurrency() != null) {
+        if (requiresCounterValue(modality)
+                && modality.getDebitAccountCurrency() != null) {
             return modality.getDebitAccountCurrency();
         }
 
@@ -127,5 +194,9 @@ public class PaymentSecurityCalculationService {
     private boolean requiresCounterValue(TrPaymentModality modality) {
         return modality.getModalityType() == PaymentModalityType.TND_FX_PURCHASE_NORMAL
                 || modality.getModalityType() == PaymentModalityType.TND_FX_PURCHASE_NEGOTIATED;
+    }
+
+    private BigDecimal safeAmount(BigDecimal amount) {
+        return amount == null ? BigDecimal.ZERO : amount;
     }
 }

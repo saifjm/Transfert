@@ -19,25 +19,11 @@ public class MockPaymentSecurityClient implements PaymentSecurityClient {
     @Override
     public PaymentSecurityItemDto secure(PaymentSecurityCommand command) {
         if (command.resourceRef() == null || command.resourceRef().isBlank()) {
-            return new PaymentSecurityItemDto(
-                    null,
-                    command.modalityId(),
-                    command.resourceType(),
-                    PaymentSecurityStatus.FAILED,
-                    command.resourceRef(),
-                    command.requestedAmount(),
-                    command.requestedCurrency(),
-                    command.fxRate(),
-                    command.counterValueAmount(),
-                    command.counterValueCurrency(),
-                    command.estimatedFeesAmount(),
-                    command.estimatedFeesCurrency(),
-                    null,
-                    null,
-                    null,
-                    null,
-                    "Payment resource reference is missing."
-            );
+            return failed(command, "Payment resource reference is missing.");
+        }
+
+        if (command.resourceRef().endsWith("SECERR")) {
+            return failed(command, "Mock security failure for payment resource.");
         }
 
         String reference = securityPrefix(command) + "-"
@@ -49,8 +35,8 @@ public class MockPaymentSecurityClient implements PaymentSecurityClient {
                 command.resourceType(),
                 PaymentSecurityStatus.SECURED,
                 command.resourceRef(),
-                command.requestedAmount(),
-                command.requestedCurrency(),
+                command.requestedTransferAmount(),
+                command.requestedTransferCurrency(),
                 command.fxRate(),
                 command.counterValueAmount(),
                 command.counterValueCurrency(),
@@ -60,18 +46,54 @@ public class MockPaymentSecurityClient implements PaymentSecurityClient {
                 command.currencyToSecure(),
                 reference,
                 LocalDateTime.now(),
-                "Payment resource secured successfully."
+                successMessage(command)
+        );
+    }
+
+    private PaymentSecurityItemDto failed(
+            PaymentSecurityCommand command,
+            String message
+    ) {
+        return new PaymentSecurityItemDto(
+                null,
+                command.modalityId(),
+                command.resourceType(),
+                PaymentSecurityStatus.FAILED,
+                command.resourceRef(),
+                command.requestedTransferAmount(),
+                command.requestedTransferCurrency(),
+                command.fxRate(),
+                command.counterValueAmount(),
+                command.counterValueCurrency(),
+                command.estimatedFeesAmount(),
+                command.estimatedFeesCurrency(),
+                null,
+                null,
+                null,
+                null,
+                message
         );
     }
 
     private String securityPrefix(PaymentSecurityCommand command) {
-        return switch (command.resourceType()) {
-            case ACCOUNT_BALANCE -> "BLK";
+        return switch (command.impactTarget()) {
+            case ACCOUNT -> "BLK";
             case FX_DEAL -> "FXRES";
             case FORWARD_CONTRACT -> "FWDRES";
-            case FINANCING_LINE -> "FINRES";
+            case FINANCING_FOLDER -> "FINRES";
             case RECEIVED_FUNDS -> "RCVRES";
             case INTERBANK_COVER -> "COVRES";
+        };
+    }
+
+    private String successMessage(PaymentSecurityCommand command) {
+        return switch (command.impactTarget()) {
+            case ACCOUNT -> "Account amount blocked successfully.";
+            case FX_DEAL -> "FX deal reserved successfully.";
+            case FORWARD_CONTRACT -> "Forward contract amount reserved successfully.";
+            case FINANCING_FOLDER -> "Financing folder amount reserved successfully.";
+            case RECEIVED_FUNDS -> "Received funds reserved successfully.";
+            case INTERBANK_COVER -> "Interbank cover reserved successfully.";
         };
     }
 }

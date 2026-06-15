@@ -4,6 +4,8 @@ import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
 import com.smi.mstr.transfer.domain.enums.TransferOperationStatus;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
@@ -29,4 +31,16 @@ public interface MvtTrOperationRepository extends JpaRepository<MvtTrOperation, 
             "financialAgents"
     })
     Optional<MvtTrOperation> findDetailedByOperationRef(String operationRef);
+
+    @EntityGraph(attributePaths = {
+            "paymentModalities"
+    })
+    @Query("""
+        select o
+        from MvtTrOperation o
+        where o.operationRef = :operationRef
+        """)
+    Optional<MvtTrOperation> findPaymentReviewByOperationRef(
+            @Param("operationRef") String operationRef
+    );
 }

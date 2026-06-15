@@ -5,6 +5,7 @@ import com.smi.mstr.transfer.domain.enums.PaymentResourceAvailabilityStatus;
 import com.smi.mstr.transfer.domain.enums.PaymentSecurityStatus;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -101,6 +102,10 @@ public class TrPaymentModality {
     @Column(name = "COUNTERPARTY_BANK_BIC", length = 11)
     private String counterpartyBankBic;
 
+
+    @Column(name = "SHARE_PERCENT", precision = 5, scale = 2, nullable = false)
+    private BigDecimal sharePercent;
+
     @Column(name = "VALUE_DATE")
     private LocalDate valueDate;
 
@@ -135,6 +140,7 @@ public class TrPaymentModality {
             cascade = CascadeType.ALL,
             orphanRemoval = true
     )
+    @BatchSize(size = 50)
     @Builder.Default
     private List<TrPaymentSecurity> securities = new ArrayList<>();
 

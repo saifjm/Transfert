@@ -15,6 +15,12 @@ public record PaymentModalityDto(
         @NotNull PaymentModalityType modalityType,
         Integer sequenceNo,
 
+        /**
+         * Quote-part du transfert couverte par cette modalité.
+         * Exemple : 40.00 = 40 %.
+         */
+        @NotNull BigDecimal sharePercent,
+
         BigDecimal sourceAmount,
         String sourceCurrency,
 

@@ -3,6 +3,7 @@ package com.smi.mstr.transfer.application;
 import com.smi.mstr.transfer.application.payment.PaymentSecurityCalculationService;
 import com.smi.mstr.transfer.application.payment.PaymentSecurityClient;
 import com.smi.mstr.transfer.application.payment.PaymentSecurityCommand;
+import com.smi.mstr.transfer.application.payment.strategy.PaymentModalityHandlerRegistry;
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
 import com.smi.mstr.transfer.domain.entity.TrPaymentModality;
 import com.smi.mstr.transfer.domain.entity.TrPaymentSecurity;
@@ -18,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -31,6 +33,7 @@ public class TransferPaymentSecurityService {
     private final PaymentSecurityCalculationService calculationService;
     private final PaymentSecurityClient securityClient;
     private final TransferOperationEventService eventService;
+    private final PaymentModalityHandlerRegistry handlerRegistry;
 
     @Transactional
     public PaymentSecurityReport securePayment(
@@ -45,6 +48,7 @@ public class TransferPaymentSecurityService {
         List<PaymentSecurityItemDto> results = operation.getPaymentModalities()
                 .stream()
                 .map(modality -> secureOne(
+                        operation,
                         modality,
                         request.estimatedFeesAmount(),
                         request.estimatedFeesCurrency()
@@ -87,8 +91,9 @@ public class TransferPaymentSecurityService {
     }
 
     private PaymentSecurityItemDto secureOne(
+            MvtTrOperation operation,
             TrPaymentModality modality,
-            java.math.BigDecimal estimatedFeesAmount,
+            BigDecimal estimatedFeesAmount,
             String estimatedFeesCurrency
     ) {
         if (modality.getAvailabilityStatus() != PaymentResourceAvailabilityStatus.AVAILABLE) {
@@ -102,7 +107,7 @@ public class TransferPaymentSecurityService {
                     null,
                     modality.getTargetAmount(),
                     modality.getTargetCurrency(),
-                    modality.getFxRate(),
+                    null,
                     null,
                     null,
                     estimatedFeesAmount,
@@ -117,11 +122,14 @@ public class TransferPaymentSecurityService {
 
         modality.clearSecurities();
 
-        PaymentSecurityCommand command = calculationService.buildSecurityCommand(
-                modality,
-                estimatedFeesAmount,
-                estimatedFeesCurrency
-        );
+        PaymentSecurityCommand command = handlerRegistry
+                .getHandler(modality.getModalityType())
+                .buildSecurityCommand(
+                        operation,
+                        modality,
+                        estimatedFeesAmount,
+                        estimatedFeesCurrency
+                );
 
         PaymentSecurityItemDto result = securityClient.secure(command);
 

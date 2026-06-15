@@ -3,13 +3,8 @@ package com.smi.mstr.transfer.api;
 import com.smi.mstr.transfer.application.TransferPaymentResourceAvailabilityService;
 import com.smi.mstr.transfer.application.TransferPaymentSecurityService;
 import com.smi.mstr.transfer.application.TransferPaymentService;
-import com.smi.mstr.transfer.dto.payment.CheckPaymentResourceAvailabilityRequest;
-import com.smi.mstr.transfer.dto.payment.PaymentModalityDto;
-import com.smi.mstr.transfer.dto.payment.PaymentResourceAvailabilityReport;
-import com.smi.mstr.transfer.dto.payment.PaymentSecurityItemDto;
-import com.smi.mstr.transfer.dto.payment.PaymentSecurityReport;
-import com.smi.mstr.transfer.dto.payment.SecurePaymentRequest;
-import com.smi.mstr.transfer.dto.payment.UpdatePaymentModalitiesRequest;
+import com.smi.mstr.transfer.application.TransferPaymentValidatorReviewService;
+import com.smi.mstr.transfer.dto.payment.*;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -24,6 +19,7 @@ public class TransferPaymentController {
     private final TransferPaymentService transferPaymentService;
     private final TransferPaymentResourceAvailabilityService resourceAvailabilityService;
     private final TransferPaymentSecurityService paymentSecurityService;
+    private final TransferPaymentValidatorReviewService validatorReviewService;
 
     /**
      * PB-11 — Saisie des modalités de paiement.
@@ -66,5 +62,17 @@ public class TransferPaymentController {
             @PathVariable String operationRef
     ) {
         return paymentSecurityService.getPaymentSecurityStatus(operationRef);
+    }
+
+
+    /**
+     * PB-15 — Validator view of resource availability and security.
+     */
+    @GetMapping("/validator-review")
+    public PaymentValidatorReviewReport getValidatorReview(
+            @PathVariable String operationRef,
+            @RequestParam(required = false) String viewedBy
+    ) {
+        return validatorReviewService.getValidatorReview(operationRef, viewedBy);
     }
 }

@@ -14,6 +14,7 @@ public class PaymentModalityMapper {
                 .modalityId(dto.modalityId())
                 .modalityType(dto.modalityType())
                 .sequenceNo(dto.sequenceNo() != null ? dto.sequenceNo() : defaultSequenceNo)
+                .sharePercent(dto.sharePercent())
 
                 .sourceAmount(dto.sourceAmount())
                 .sourceCurrency(dto.sourceCurrency())
@@ -44,6 +45,7 @@ public class PaymentModalityMapper {
                 entity.getModalityId(),
                 entity.getModalityType(),
                 entity.getSequenceNo(),
+                entity.getSharePercent(),
 
                 entity.getSourceAmount(),
                 entity.getSourceCurrency(),

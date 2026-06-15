@@ -3,6 +3,7 @@ package com.smi.mstr.transfer.domain.entity;
 import com.smi.mstr.transfer.domain.enums.*;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.BatchSize;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -195,6 +196,8 @@ public class MvtTrOperation {
             cascade = CascadeType.ALL,
             orphanRemoval = true
     )
+    @OrderBy("sequenceNo ASC")
+    @BatchSize(size = 50)
     @Builder.Default
     private List<TrPaymentModality> paymentModalities = new ArrayList<>();
 
