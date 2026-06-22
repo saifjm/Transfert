@@ -1,26 +1,28 @@
 package com.smi.mstr.transfer.dto;
 
-import com.smi.mstr.transfer.domain.enums.SwiftPriority;
 import com.smi.mstr.transfer.domain.enums.TransferType;
 import com.smi.mstr.transfer.dto.normalized.AccountDto;
 import com.smi.mstr.transfer.dto.normalized.FinancialAgentDto;
 import com.smi.mstr.transfer.dto.normalized.PartyDto;
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
 public record CreateTransferOrderRequest(
-        @NotNull TransferType transferType,
-        SwiftPriority swiftPriority,
 
-        String numDossier,
-        LocalDate dateDossier,
+        TransferType transferType,
 
-        @NotBlank String branchCode,
-        @NotBlank String createdBy,
+        PartyDto ultimateDebtor,
+        PartyDto debtor,
+        PartyDto creditor,
+        PartyDto ultimateCreditor,
+
+        AccountDto creditorAccount,
+        AccountDto chargesAccount,
+
+        FinancialAgentDto creditorAgent,
+
+        String endToEndId,
 
         BigDecimal orderAmount,
         String orderCurrency,
@@ -28,16 +30,19 @@ public record CreateTransferOrderRequest(
         BigDecimal transferAmount,
         String transferCurrency,
 
+        LocalDate valueDate,
+
+        BigDecimal fxRate,
+        BigDecimal counterValueTnd,
+
+        String swiftPriority,
+        String serviceLevelCode,
+        String categoryPurposeCode,
+
         String purposeCode,
         String purposeProprietary,
         String remittanceUnstructured,
-        String chargeBearer,
 
-        @NotNull @Valid PartyDto debtor,
-        @NotNull @Valid AccountDto debtorAccount,
-
-        @NotNull @Valid PartyDto creditor,
-        @NotNull @Valid AccountDto creditorAccount,
-
-        @NotNull @Valid FinancialAgentDto creditorAgent
-) {}
+        String chargeBearer
+) {
+}

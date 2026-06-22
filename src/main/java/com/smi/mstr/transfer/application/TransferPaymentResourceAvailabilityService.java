@@ -1,8 +1,7 @@
 package com.smi.mstr.transfer.application;
 
-import com.smi.mstr.transfer.application.payment.PaymentResourceCommand;
 import com.smi.mstr.transfer.application.payment.PaymentResourceAvailabilityClient;
-import com.smi.mstr.transfer.application.payment.PaymentSecurityCalculationService;
+import com.smi.mstr.transfer.application.payment.PaymentResourceCommand;
 import com.smi.mstr.transfer.application.payment.strategy.PaymentModalityHandlerRegistry;
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
 import com.smi.mstr.transfer.domain.entity.TrPaymentModality;
@@ -27,29 +26,46 @@ public class TransferPaymentResourceAvailabilityService {
     private static final String AGENT_SAISIE_ROLE = "AGENT_SAISIE";
 
     private final MvtTrOperationRepository operationRepository;
-    private final PaymentSecurityCalculationService calculationService;
     private final PaymentResourceAvailabilityClient availabilityClient;
     private final TransferOperationEventService eventService;
     private final PaymentModalityHandlerRegistry handlerRegistry;
+    private final TransferOperationLookupService operationLookupService;
 
+    /**
+     * PB-12 — Vérifier la disponibilité des ressources de paiement.
+     *
+     * Le paramètre operationRef est conservé côté API pour compatibilité,
+     * mais il correspond maintenant à REF_ORDRE côté base.
+     */
     @Transactional
     public PaymentResourceAvailabilityReport checkAvailability(
             String operationRef,
             CheckPaymentResourceAvailabilityRequest request
     ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
+
         assertEditable(operation);
 
         LocalDateTime checkedAt = LocalDateTime.now();
 
-        List<PaymentResourceAvailabilityItemDto> results = operation.getPaymentModalities()
-                .stream()
+        List<TrPaymentModality> modalities = operation.getPaymentModalities() == null
+                ? List.of()
+                : operation.getPaymentModalities();
+
+        List<PaymentResourceAvailabilityItemDto> results = modalities.stream()
                 .map(modality -> checkOne(operation, modality, checkedAt))
                 .toList();
 
-        PaymentResourceAvailabilityStatus overallStatus = resolveOverallStatus(results);
+        PaymentResourceAvailabilityStatus overallStatus =
+                resolveOverallStatus(results);
 
-        operation.setUpdatedAt(LocalDateTime.now());
+        /*
+         * Pas de operation.setUpdatedAt(...)
+         * Le nouveau modèle TR_OPERATION_MVT ne contient plus UPDATED_AT.
+         *
+         * Les champs de TR_PAYMENT_MODALITY sont mis à jour par dirty checking JPA
+         * dans la transaction courante.
+         */
         operationRepository.save(operation);
 
         eventService.registerEvent(
@@ -64,7 +80,7 @@ public class TransferPaymentResourceAvailabilityService {
         );
 
         return new PaymentResourceAvailabilityReport(
-                operationRef,
+                operation.getRefOrdre(),
                 overallStatus,
                 checkedAt,
                 results
@@ -76,49 +92,78 @@ public class TransferPaymentResourceAvailabilityService {
             TrPaymentModality modality,
             LocalDateTime checkedAt
     ) {
+        if (modality.getModalityType() == null) {
+            PaymentResourceAvailabilityItemDto result =
+                    new PaymentResourceAvailabilityItemDto(
+                            modality.getModalityId(),
+                            null,
+                            null,
+                            modality.getTargetAmount(),
+                            modality.getTargetCurrency(),
+                            null,
+                            null,
+                            PaymentResourceAvailabilityStatus.ERROR,
+                            "Payment modality type is missing."
+                    );
+
+            applyResultToModality(modality, result, checkedAt);
+            return result;
+        }
+
         PaymentResourceCommand command = handlerRegistry
                 .getHandler(modality.getModalityType())
                 .buildAvailabilityCommand(operation, modality);
 
-        PaymentResourceAvailabilityItemDto result = availabilityClient.check(command);
+        PaymentResourceAvailabilityItemDto result =
+                availabilityClient.check(command);
 
+        applyResultToModality(modality, result, checkedAt);
+
+        return result;
+    }
+
+    private void applyResultToModality(
+            TrPaymentModality modality,
+            PaymentResourceAvailabilityItemDto result,
+            LocalDateTime checkedAt
+    ) {
         modality.setAvailabilityStatus(result.status());
         modality.setAvailableAmount(result.availableAmount());
         modality.setAvailableCurrency(result.availableCurrency());
         modality.setAvailabilityCheckedAt(checkedAt);
         modality.setAvailabilityMessage(result.message());
-
-        return result;
     }
 
     private PaymentResourceAvailabilityStatus resolveOverallStatus(
             List<PaymentResourceAvailabilityItemDto> results
     ) {
-        if (results.isEmpty()) {
+        if (results == null || results.isEmpty()) {
             return PaymentResourceAvailabilityStatus.NOT_REQUIRED;
         }
 
-        if (results.stream().anyMatch(r -> r.status() == PaymentResourceAvailabilityStatus.ERROR)) {
+        if (results.stream().anyMatch(r ->
+                r.status() == PaymentResourceAvailabilityStatus.ERROR)) {
             return PaymentResourceAvailabilityStatus.ERROR;
         }
 
-        if (results.stream().anyMatch(r -> r.status() == PaymentResourceAvailabilityStatus.UNAVAILABLE)) {
+        if (results.stream().anyMatch(r ->
+                r.status() == PaymentResourceAvailabilityStatus.UNAVAILABLE)) {
             return PaymentResourceAvailabilityStatus.UNAVAILABLE;
         }
 
-        if (results.stream().anyMatch(r -> r.status() == PaymentResourceAvailabilityStatus.INSUFFICIENT)) {
+        if (results.stream().anyMatch(r ->
+                r.status() == PaymentResourceAvailabilityStatus.INSUFFICIENT)) {
             return PaymentResourceAvailabilityStatus.INSUFFICIENT;
         }
 
-        return PaymentResourceAvailabilityStatus.AVAILABLE;
+        if (results.stream().allMatch(r ->
+                r.status() == PaymentResourceAvailabilityStatus.AVAILABLE)) {
+            return PaymentResourceAvailabilityStatus.AVAILABLE;
+        }
+
+        return PaymentResourceAvailabilityStatus.NOT_REQUIRED;
     }
 
-    private MvtTrOperation findOperationByRef(String operationRef) {
-        return operationRepository.findByOperationRef(operationRef)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Transfer operation not found: " + operationRef
-                ));
-    }
 
     private void assertEditable(MvtTrOperation operation) {
         if (!operation.isEditable()) {

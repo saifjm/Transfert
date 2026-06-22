@@ -6,7 +6,6 @@ import com.smi.mstr.transfer.domain.entity.TrPaymentSecurity;
 import com.smi.mstr.transfer.domain.enums.OperationEventType;
 import com.smi.mstr.transfer.domain.enums.PaymentImpactAction;
 import com.smi.mstr.transfer.domain.enums.PaymentImpactTarget;
-import com.smi.mstr.transfer.domain.enums.PaymentModalityType;
 import com.smi.mstr.transfer.domain.enums.PaymentResourceAvailabilityStatus;
 import com.smi.mstr.transfer.domain.enums.PaymentResourceType;
 import com.smi.mstr.transfer.domain.enums.PaymentSecurityStatus;
@@ -33,26 +32,27 @@ public class TransferPaymentValidatorReviewService {
 
     private final MvtTrOperationRepository operationRepository;
     private final TransferOperationEventService eventService;
+    private final TransferOperationLookupService operationLookupService;
 
+    /**
+     * PB-15 — Vue validateur du résultat de disponibilité / sécurisation.
+     *
+     * operationRef côté API correspond maintenant à REF_ORDRE côté DB.
+     */
     @Transactional
     public PaymentValidatorReviewReport getValidatorReview(
             String operationRef,
             String viewedBy
     ) {
-        MvtTrOperation operation = operationRepository
-                .findPaymentReviewByOperationRef(operationRef)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Transfer operation not found: " + operationRef
-                ));
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
 
         LocalDateTime viewedAt = LocalDateTime.now();
 
         List<PaymentValidationAnomalyDto> anomalies = new ArrayList<>();
 
-        List<TrPaymentModality> modalities =
-                operation.getPaymentModalities() == null
-                        ? List.of()
-                        : operation.getPaymentModalities();
+        List<TrPaymentModality> modalities = operation.getPaymentModalities() == null
+                ? List.of()
+                : operation.getPaymentModalities();
 
         if (modalities.isEmpty()) {
             anomalies.add(new PaymentValidationAnomalyDto(
@@ -85,16 +85,16 @@ public class TransferPaymentValidatorReviewService {
                 OperationEventType.PAYMENT_VALIDATION_RESULT_VIEWED,
                 operation.getStatus(),
                 operation.getStatus(),
-                viewedBy == null || viewedBy.isBlank() ? "SYSTEM" : viewedBy,
+                resolveActor(viewedBy),
                 VALIDATOR_ROLE,
                 "Payment validation result viewed. Can proceed: " + canProceedToValidation,
                 null
         );
 
         return new PaymentValidatorReviewReport(
-                operation.getOperationRef(),
-                operation.getTransferAmount(),
-                operation.getTransferCurrency(),
+                operation.getRefOrdre(),
+                operation.getMntDevise(),
+                operation.getCodeDevise(),
                 overallAvailabilityStatus,
                 overallSecurityStatus,
                 canProceedToValidation,
@@ -116,6 +116,11 @@ public class TransferPaymentValidatorReviewService {
         checkAvailabilityAnomalies(modality, anomalies);
         checkSecurityAnomalies(modality, anomalies);
 
+        /*
+         * securities est chargé lazy ici, dans la transaction.
+         * Ne pas fetcher paymentModalities + paymentModalities.securities
+         * dans le même EntityGraph si ce sont deux List.
+         */
         List<PaymentSecurityItemDto> securityItems =
                 modality.getSecurities() == null
                         ? List.of()
@@ -154,7 +159,7 @@ public class TransferPaymentValidatorReviewService {
             List<TrPaymentModality> modalities,
             List<PaymentValidationAnomalyDto> anomalies
     ) {
-        if (modalities.isEmpty()) {
+        if (modalities == null || modalities.isEmpty()) {
             return;
         }
 
@@ -187,8 +192,8 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.BLOCKING,
                     "PAYMENT_RESOURCE_NOT_CHECKED",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].availabilityStatus",
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "availabilityStatus"),
                     "Payment resource availability has not been checked."
             ));
             return;
@@ -199,8 +204,8 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.BLOCKING,
                     "PAYMENT_RESOURCE_INSUFFICIENT",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].availabilityStatus",
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "availabilityStatus"),
                     "Payment resource is insufficient: " + nullSafe(modality.getAvailabilityMessage())
             ));
             return;
@@ -212,9 +217,10 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.BLOCKING,
                     "PAYMENT_RESOURCE_UNAVAILABLE",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].availabilityStatus",
-                    "Payment resource is unavailable or in error: " + nullSafe(modality.getAvailabilityMessage())
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "availabilityStatus"),
+                    "Payment resource is unavailable or in error: "
+                            + nullSafe(modality.getAvailabilityMessage())
             ));
         }
     }
@@ -230,8 +236,8 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.WARNING,
                     "PAYMENT_SECURITY_STATUS_MISSING",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].securityStatus",
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "securityStatus"),
                     "Payment security status is missing."
             ));
             return;
@@ -242,8 +248,8 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.BLOCKING,
                     "PAYMENT_RESOURCE_NOT_SECURED",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].securityStatus",
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "securityStatus"),
                     "Payment resource is required but not secured."
             ));
             return;
@@ -254,8 +260,8 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.BLOCKING,
                     "PAYMENT_SECURITY_FAILED",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].securityStatus",
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "securityStatus"),
                     "Payment resource security failed."
             ));
             return;
@@ -267,8 +273,8 @@ public class TransferPaymentValidatorReviewService {
                     ValidationSeverity.BLOCKING,
                     "PAYMENT_SECURITY_REFERENCE_MISSING",
                     modality.getModalityId(),
-                    modality.getModalityType().name(),
-                    "payment.modalities[" + modality.getSequenceNo() + "].securities",
+                    resolveModalityTypeName(modality),
+                    fieldPath(modality, "securities"),
                     "Payment resource is marked as secured but no security reference exists."
             ));
         }
@@ -277,7 +283,9 @@ public class TransferPaymentValidatorReviewService {
     private PaymentSecurityItemDto toSecurityDto(TrPaymentSecurity security) {
         return new PaymentSecurityItemDto(
                 security.getSecurityId(),
-                security.getModality() == null ? null : security.getModality().getModalityId(),
+                security.getModality() == null
+                        ? null
+                        : security.getModality().getModalityId(),
                 security.getResourceType(),
                 security.getSecurityStatus(),
                 security.getResourceRef(),
@@ -299,7 +307,7 @@ public class TransferPaymentValidatorReviewService {
     private PaymentResourceAvailabilityStatus resolveOverallAvailability(
             List<TrPaymentModality> modalities
     ) {
-        if (modalities.isEmpty()) {
+        if (modalities == null || modalities.isEmpty()) {
             return PaymentResourceAvailabilityStatus.ERROR;
         }
 
@@ -327,8 +335,10 @@ public class TransferPaymentValidatorReviewService {
         return PaymentResourceAvailabilityStatus.NOT_REQUIRED;
     }
 
-    private PaymentSecurityStatus resolveOverallSecurity(List<TrPaymentModality> modalities) {
-        if (modalities.isEmpty()) {
+    private PaymentSecurityStatus resolveOverallSecurity(
+            List<TrPaymentModality> modalities
+    ) {
+        if (modalities == null || modalities.isEmpty()) {
             return PaymentSecurityStatus.NOT_REQUIRED;
         }
 
@@ -342,6 +352,11 @@ public class TransferPaymentValidatorReviewService {
             return PaymentSecurityStatus.REQUIRED_NOT_SECURED;
         }
 
+        if (modalities.stream().allMatch(m ->
+                m.getSecurityStatus() == PaymentSecurityStatus.SECURED)) {
+            return PaymentSecurityStatus.SECURED;
+        }
+
         if (modalities.stream().anyMatch(m ->
                 m.getSecurityStatus() == PaymentSecurityStatus.SECURED)) {
             return PaymentSecurityStatus.SECURED;
@@ -351,6 +366,10 @@ public class TransferPaymentValidatorReviewService {
     }
 
     private PaymentResourceType resolveResourceType(TrPaymentModality modality) {
+        if (modality.getModalityType() == null) {
+            return null;
+        }
+
         return switch (modality.getModalityType()) {
             case TND_FX_PURCHASE_NORMAL,
                  TND_FX_PURCHASE_NEGOTIATED,
@@ -366,6 +385,10 @@ public class TransferPaymentValidatorReviewService {
     }
 
     private PaymentImpactTarget resolveImpactTarget(TrPaymentModality modality) {
+        if (modality.getModalityType() == null) {
+            return null;
+        }
+
         return switch (modality.getModalityType()) {
             case TND_FX_PURCHASE_NORMAL,
                  TND_FX_PURCHASE_NEGOTIATED,
@@ -381,6 +404,10 @@ public class TransferPaymentValidatorReviewService {
     }
 
     private PaymentImpactAction resolveImpactAction(TrPaymentModality modality) {
+        if (modality.getModalityType() == null) {
+            return null;
+        }
+
         return switch (modality.getModalityType()) {
             case TND_FX_PURCHASE_NORMAL,
                  TND_FX_PURCHASE_NEGOTIATED,
@@ -396,6 +423,10 @@ public class TransferPaymentValidatorReviewService {
     }
 
     private String resolveResourceRef(TrPaymentModality modality) {
+        if (modality.getModalityType() == null) {
+            return null;
+        }
+
         return switch (modality.getModalityType()) {
             case TND_FX_PURCHASE_NORMAL,
                  TND_FX_PURCHASE_NEGOTIATED,
@@ -408,6 +439,24 @@ public class TransferPaymentValidatorReviewService {
             case INTERBANK_FX_COVER -> modality.getInterbankCoverRef();
             case OTHER -> modality.getDebitAccountRef();
         };
+    }
+
+
+
+    private String resolveActor(String viewedBy) {
+        return viewedBy == null || viewedBy.isBlank()
+                ? "SYSTEM"
+                : viewedBy;
+    }
+
+    private String resolveModalityTypeName(TrPaymentModality modality) {
+        return modality.getModalityType() == null
+                ? null
+                : modality.getModalityType().name();
+    }
+
+    private String fieldPath(TrPaymentModality modality, String fieldName) {
+        return "payment.modalities[" + modality.getSequenceNo() + "]." + fieldName;
     }
 
     private String nullSafe(String value) {

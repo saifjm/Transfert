@@ -1,12 +1,20 @@
 package com.smi.mstr.transfer.domain.enums;
 
 public enum FinancialAgentRole {
-    DBTR_AGT,
-    CDTR_AGT,
-    INTRMY_AGT1,
-    INTRMY_AGT2,
-    INTRMY_AGT3,
-    INSTG_AGT,
-    INSTD_AGT,
-    STTLM_AGT
+
+    INSTG_AGT,       // Instructing Agent
+    INSTD_AGT,       // Instructed Agent
+
+    DBTR_AGT,        // Debtor Agent
+    CDTR_AGT,        // Creditor Agent
+
+    INTRMY_AGT_1,
+    INTRMY_AGT_2,
+    INTRMY_AGT_3,
+
+    NOSTRO_AGT,
+    REIMBURSEMENT_AGT,
+
+    SENDER_CORRESPONDENT,
+    RECEIVER_CORRESPONDENT
 }

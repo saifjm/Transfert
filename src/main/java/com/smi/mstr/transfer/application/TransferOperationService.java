@@ -1,29 +1,28 @@
 package com.smi.mstr.transfer.application;
 
+import com.smi.mstr.transfer.application.context.TransferCreationContext;
 import com.smi.mstr.transfer.application.mapper.TransferOperationResponseMapper;
-import com.smi.mstr.transfer.application.mapper.TransferOrderDataMapper;
 import com.smi.mstr.transfer.domain.entity.*;
-import com.smi.mstr.transfer.domain.enums.AccountRole;
-import com.smi.mstr.transfer.domain.enums.CompletionStatus;
-import com.smi.mstr.transfer.domain.enums.FinancialAgentRole;
-import com.smi.mstr.transfer.domain.enums.OperationEventType;
-import com.smi.mstr.transfer.domain.enums.OriginChannel;
-import com.smi.mstr.transfer.domain.enums.PartyRole;
-import com.smi.mstr.transfer.domain.enums.TransferOperationStatus;
+import com.smi.mstr.transfer.domain.enums.*;
 import com.smi.mstr.transfer.domain.repository.MvtTrOperationRepository;
-import com.smi.mstr.transfer.domain.repository.TrOperationEventRepository;
 import com.smi.mstr.transfer.domain.repository.TrOperationValidationErrorRepository;
 import com.smi.mstr.transfer.dto.*;
 import com.smi.mstr.transfer.dto.normalized.AccountDto;
-import com.smi.mstr.transfer.dto.normalized.FinancialAgentDto;
 import com.smi.mstr.transfer.dto.normalized.PartyDto;
+import com.smi.mstr.transfer.dto.normalized.PartyIdentificationDto;
+import com.smi.mstr.transfer.dto.normalized.PostalAddressDto;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
+
+import com.smi.mstr.transfer.dto.normalized.FinancialAgentDto;
 
 @Service
 @RequiredArgsConstructor
@@ -32,195 +31,264 @@ public class TransferOperationService {
     private static final String AGENT_SAISIE_ROLE = "AGENT_SAISIE";
 
     private final MvtTrOperationRepository operationRepository;
-    private final TrOperationEventRepository eventRepository;
     private final TransferReferenceService referenceService;
-    private final TransferOrderDataMapper orderDataMapper;
     private final TransferOperationResponseMapper responseMapper;
     private final TransferOrderValidationService validationService;
     private final TrOperationValidationErrorRepository validationErrorRepository;
+    private final TransferOperationEventService eventService;
+    private final TransferOperationLookupService operationLookupService;
 
+    /**
+     * Création d'un ordre manuel.
+     *
+     * Nouveau modèle :
+     * - REF_OPERATION est généré par séquence BD.
+     * - REF_ORDRE peut être générée après sauvegarde, car elle peut dépendre de REF_OPERATION.
+     * - NUM_DOSSIER peut venir de la requête ou être généré.
+     */
     @Transactional
-    public TransferOperationResponse createManualOrder(CreateTransferOrderRequest request) {
-        String operationRef = referenceService.generateReference();
-        referenceService.ensureUnique(operationRef);
+    public TransferOperationResponse createManualOrder(
+            CreateTransferOrderRequest request,
+            TransferCreationContext context
+    ) {
+        MvtTrOperation operation = new MvtTrOperation();
 
-        MvtTrOperation operation = buildNewManualOperation(request, operationRef);
+        operation.setDateOperation(LocalDate.now());
+        operation.setDateDossier(LocalDate.now());
+        operation.setCreatedAt(LocalDateTime.now());
 
-        attachNormalizedOrderData(
-                operation,
-                request.debtor(),
-                request.debtorAccount(),
-                request.creditor(),
-                request.creditorAccount(),
-                request.creditorAgent()
-        );
+        operation.setCorrelationId(resolveCorrelationId(context));
+        operation.setCodeAgence(context.branchCode());
+        operation.setSourceChannel(context.sourceChannel());
+        operation.setSourceModule(context.sourceModule());
+        operation.setSourceReference(context.sourceReference());
 
-        operation.setCompletionStatus(resolveCompletionStatus(operation));
+        operation.setWorkflowInstanceId(context.workflowInstanceId());
+        operation.setWorkflowTaskId(context.workflowTaskId());
+        operation.setWorkflowContextJson(context.workflowContextJson());
+
+        operation.setStatus(TransferOperationStatus.X);
+        operation.setTypeTransfert(request.transferType());
+
+        operation.setCodeOperation(resolveCodeOperation(request, context));
+
+        applyClientData(operation, request);
+
+        operation = operationRepository.saveAndFlush(operation);
+
+        operation.setNumDossier(referenceService.generateNumDossier(operation));
+        operation.setRefOrdre(referenceService.generateRefOrdre(operation));
+
+        if (isBlank(operation.getEndToEndId())) {
+            operation.setEndToEndId(referenceService.generateEndToEndId(operation));
+        }
+
+        if (isBlank(operation.getUetr())) {
+            operation.setUetr(referenceService.generateUetr());
+        }
 
         MvtTrOperation saved = operationRepository.save(operation);
 
-        registerEvent(
+        eventService.registerEvent(
                 saved,
                 OperationEventType.OPERATION_CREATED,
                 null,
-                TransferOperationStatus.X,
-                request.createdBy(),
-                AGENT_SAISIE_ROLE,
-                "Manual normalized transfer order created",
+                saved.getStatus(),
+                context.connectedUserId(),
+                context.connectedUserRole(),
+                "Manual transfer order created",
                 null
         );
 
         return responseMapper.toResponse(saved);
     }
 
+    /**
+     * Sauvegarde brouillon.
+     *
+     * L'identifiant métier reçu en path reste operationRef côté API,
+     * mais il correspond maintenant à REF_ORDRE côté base.
+     */
     @Transactional
-    public TransferOperationResponse saveDraft(String operationRef, SaveTransferDraftRequest request) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+    public TransferOperationResponse saveDraft(
+            String operationRef,
+            SaveTransferDraftRequest request
+    ) {
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
 
         assertEditable(operation);
 
         updateOperationHeaderFromDraft(operation, request);
+        updateSnapshotsFromDraftIfProvided(operation, request);
 
-        operation.clearNormalizedOrderData();
+        syncHeaderShortcutsFromSnapshots(operation);
 
-        attachNormalizedOrderData(
+        MvtTrOperation saved = operationRepository.save(operation);
+
+        eventService.registerEvent(
+                saved,
+                OperationEventType.DRAFT_SAVED,
+                saved.getStatus(),
+                saved.getStatus(),
+                request.updatedBy(),
+                AGENT_SAISIE_ROLE,
+                request.comment(),
+                null
+        );
+
+        return responseMapper.toResponse(saved);
+    }
+
+    private String resolveCorrelationId(TransferCreationContext context) {
+        if (notBlank(context.correlationId())) {
+            return context.correlationId().trim();
+        }
+
+        return "CORR-MS-TR-" + java.util.UUID.randomUUID();
+    }
+
+    private Long resolveCodeOperation(
+            CreateTransferOrderRequest request,
+            TransferCreationContext context
+    ) {
+        if (request.transferType() == null) {
+            throw new IllegalArgumentException("Transfer type is required.");
+        }
+
+        return switch (request.transferType()) {
+            case C -> 101L;
+            case F -> 201L;
+        };
+    }
+
+    private String clean(String value) {
+        return value == null ? null : value.trim();
+    }
+
+    private String cleanUpper(String value) {
+        return value == null ? null : value.trim().toUpperCase();
+    }
+
+    private SwiftPriority parseSwiftPriority(String value) {
+        if (value == null || value.isBlank()) {
+            return SwiftPriority.N; // valeur par défaut si ton enum contient N
+        }
+
+        return SwiftPriority.valueOf(value.trim().toUpperCase());
+    }
+
+    private void applyClientData(
+            MvtTrOperation operation,
+            CreateTransferOrderRequest request
+    ) {
+        operation.setEndToEndId(clean(request.endToEndId()));
+
+        operation.setMntOrdre(request.orderAmount());
+        operation.setCodeDeviseOrdre(cleanUpper(request.orderCurrency()));
+
+        operation.setMntDevise(request.transferAmount());
+        operation.setCodeDevise(cleanUpper(request.transferCurrency()));
+
+        operation.setDateValeurTransfert(request.valueDate());
+
+        operation.setCoursConversion(request.fxRate());
+        operation.setContreValeurTnd(request.counterValueTnd());
+
+        operation.setSwiftPriority(parseSwiftPriority(request.swiftPriority()));
+        operation.setServiceLevelCode(cleanUpper(request.serviceLevelCode()));
+        operation.setCategoryPurposeCode(cleanUpper(request.categoryPurposeCode()));
+
+        operation.setPurposeCode(clean(request.purposeCode()));
+        operation.setPurposeProprietary(clean(request.purposeProprietary()));
+        operation.setRemittanceUnstructured(clean(request.remittanceUnstructured()));
+
+        operation.setChargeBearer(cleanUpper(request.chargeBearer()));
+
+        addPartySnapshot(operation, PartyRole.ULTMT_DBTR, request.ultimateDebtor());
+        addPartySnapshot(operation, PartyRole.DBTR, request.debtor());
+        addPartySnapshot(operation, PartyRole.CDTR, request.creditor());
+        addPartySnapshot(operation, PartyRole.ULTMT_CDTR, request.ultimateCreditor());
+
+        addAccountSnapshot(operation, AccountRole.CDTR_ACCT, request.creditorAccount());
+        addAccountSnapshot(operation, AccountRole.CHARGES_ACCT, request.chargesAccount());
+
+        addFinancialAgentSnapshot(
                 operation,
-                request.debtor(),
-                request.debtorAccount(),
-                request.creditor(),
-                request.creditorAccount(),
+                FinancialAgentRole.CDTR_AGT,
                 request.creditorAgent()
         );
 
-        operation.setCompletionStatus(resolveCompletionStatus(operation));
-
-        MvtTrOperation saved = operationRepository.save(operation);
-
-        registerEvent(
-                saved,
-                OperationEventType.DRAFT_SAVED,
-                TransferOperationStatus.X,
-                TransferOperationStatus.X,
-                request.updatedBy(),
-                AGENT_SAISIE_ROLE,
-                request.comment(),
-                null
-        );
-
-        return responseMapper.toResponse(saved);
+        syncHeaderShortcutsFromSnapshots(operation);
     }
 
-    @Transactional
-    public TransferOperationResponse updateDebtor(
-            String operationRef,
-            UpdateDebtorRequest request
+    private void updateSnapshotsFromDraftIfProvided(
+            MvtTrOperation operation,
+            SaveTransferDraftRequest request
     ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
-        assertEditable(operation);
+        if (request.ultimateDebtor() != null) {
+            removePartiesByRole(operation, PartyRole.ULTMT_DBTR);
+            addPartySnapshot(operation, PartyRole.ULTMT_DBTR, request.ultimateDebtor());
+        }
 
-        operation.removeAccountsByRole(AccountRole.DBTR_ACCT);
-        operation.removePartiesByRole(PartyRole.DBTR);
+        if (request.debtor() != null) {
+            removePartiesByRole(operation, PartyRole.DBTR);
+            addPartySnapshot(operation, PartyRole.DBTR, request.debtor());
+        }
 
-        TrParty debtor = orderDataMapper.toParty(request.debtor(), PartyRole.DBTR);
-        operation.addParty(debtor);
+        if (request.creditor() != null) {
+            removePartiesByRole(operation, PartyRole.CDTR);
+            addPartySnapshot(operation, PartyRole.CDTR, request.creditor());
+        }
 
-        operation.addAccount(orderDataMapper.toAccount(
-                request.debtorAccount(),
-                AccountRole.DBTR_ACCT,
-                debtor
-        ));
+        if (request.ultimateCreditor() != null) {
+            removePartiesByRole(operation, PartyRole.ULTMT_CDTR);
+            addPartySnapshot(operation, PartyRole.ULTMT_CDTR, request.ultimateCreditor());
+        }
 
-        operation.setUpdatedAt(LocalDateTime.now());
-        operation.setCompletionStatus(resolveCompletionStatus(operation));
+        if (request.creditorAccount() != null) {
+            removeAccountsByRole(operation, AccountRole.CDTR_ACCT);
+            addAccountSnapshot(operation, AccountRole.CDTR_ACCT, request.creditorAccount());
+        }
 
-        MvtTrOperation saved = operationRepository.save(operation);
+        if (request.chargesAccount() != null) {
+            removeAccountsByRole(operation, AccountRole.CHARGES_ACCT);
+            addAccountSnapshot(operation, AccountRole.CHARGES_ACCT, request.chargesAccount());
+        }
 
-        registerEvent(
-                saved,
-                OperationEventType.ORDER_UPDATED,
-                TransferOperationStatus.X,
-                TransferOperationStatus.X,
-                request.updatedBy(),
-                AGENT_SAISIE_ROLE,
-                request.comment(),
-                null
-        );
-
-        return responseMapper.toResponse(saved);
+        if (request.creditorAgent() != null) {
+            removeFinancialAgentsByRole(operation, FinancialAgentRole.CDTR_AGT);
+            addFinancialAgentSnapshot(operation, FinancialAgentRole.CDTR_AGT, request.creditorAgent());
+        }
     }
 
-    @Transactional
-    public TransferOperationResponse updateCreditor(
-            String operationRef,
-            UpdateCreditorRequest request
-    ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
-        assertEditable(operation);
-
-        operation.removeAccountsByRole(AccountRole.CDTR_ACCT);
-        operation.removeFinancialAgentsByRole(FinancialAgentRole.CDTR_AGT);
-        operation.removePartiesByRole(PartyRole.CDTR);
-
-        TrParty creditor = orderDataMapper.toParty(request.creditor(), PartyRole.CDTR);
-        operation.addParty(creditor);
-
-        operation.addAccount(orderDataMapper.toAccount(
-                request.creditorAccount(),
-                AccountRole.CDTR_ACCT,
-                creditor
-        ));
-
-        operation.addFinancialAgent(orderDataMapper.toFinancialAgent(
-                request.creditorAgent(),
-                FinancialAgentRole.CDTR_AGT
-        ));
-
-        operation.setUpdatedAt(LocalDateTime.now());
-        operation.setCompletionStatus(resolveCompletionStatus(operation));
-
-        MvtTrOperation saved = operationRepository.save(operation);
-
-        registerEvent(
-                saved,
-                OperationEventType.ORDER_UPDATED,
-                TransferOperationStatus.X,
-                TransferOperationStatus.X,
-                request.updatedBy(),
-                AGENT_SAISIE_ROLE,
-                request.comment(),
-                null
-        );
-
-        return responseMapper.toResponse(saved);
-    }
-
+    /**
+     * Mise à jour qualification / montant / devise / motif.
+     */
     @Transactional
     public TransferOperationResponse updateQualification(
             String operationRef,
             UpdateTransferQualificationRequest request
     ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
+
         assertEditable(operation);
 
-        operation.setOrderAmount(request.orderAmount());
-        operation.setOrderCurrency(request.orderCurrency());
-        operation.setTransferAmount(request.transferAmount());
-        operation.setTransferCurrency(request.transferCurrency());
+        operation.setMntOrdre(request.orderAmount());
+        operation.setCodeDeviseOrdre(request.orderCurrency());
+        operation.setMntDevise(request.transferAmount());
+        operation.setCodeDevise(request.transferCurrency());
         operation.setPurposeCode(request.purposeCode());
         operation.setPurposeProprietary(request.purposeProprietary());
         operation.setRemittanceUnstructured(request.remittanceUnstructured());
         operation.setChargeBearer(request.chargeBearer());
-        operation.setUpdatedAt(LocalDateTime.now());
-
-        operation.setCompletionStatus(resolveCompletionStatus(operation));
 
         MvtTrOperation saved = operationRepository.save(operation);
 
         registerEvent(
                 saved,
                 OperationEventType.ORDER_UPDATED,
-                TransferOperationStatus.X,
-                TransferOperationStatus.X,
+                saved.getStatus(),
+                saved.getStatus(),
                 request.updatedBy(),
                 AGENT_SAISIE_ROLE,
                 request.comment(),
@@ -230,18 +298,26 @@ public class TransferOperationService {
         return responseMapper.toResponse(saved);
     }
 
+
+
+    /**
+     * Contrôle de toilette.
+     */
     @Transactional
     public TransferValidationReport runToiletteControl(
             String operationRef,
             RunToiletteControlRequest request
     ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
+
         assertEditable(operation);
 
         TransferValidationReport report =
                 validationService.validateForInputControl(operation);
 
-        validationErrorRepository.deleteByOperation_RefOperation(operation.getRefOperation());
+        validationErrorRepository.deleteByOperation_RefOperation(
+                operation.getRefOperation()
+        );
 
         report.errors().forEach(error ->
                 validationErrorRepository.save(
@@ -273,13 +349,17 @@ public class TransferOperationService {
         return report;
     }
 
-
+    /**
+     * Consultation des erreurs de validation.
+     */
     @Transactional(readOnly = true)
     public List<ValidationErrorDto> getValidationErrors(String operationRef) {
-        findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
 
         return validationErrorRepository
-                .findByOperation_OperationRefOrderBySectionAscFieldPathAsc(operationRef)
+                .findByOperation_RefOperationOrderBySectionAscFieldPathAsc(
+                        operation.getRefOperation()
+                )
                 .stream()
                 .map(error -> new ValidationErrorDto(
                         error.getSection(),
@@ -293,161 +373,292 @@ public class TransferOperationService {
 
 
 
-    private MvtTrOperation buildNewManualOperation(
-            CreateTransferOrderRequest request,
-            String operationRef
-    ) {
-        return MvtTrOperation.builder()
-                .operationRef(operationRef)
-                .dateOperation(LocalDate.now())
-                .status(TransferOperationStatus.X)
-                .completionStatus(CompletionStatus.EMPTY)
-                .transferType(request.transferType())
-                .swiftPriority(request.swiftPriority())
-                .numDossier(request.numDossier())
-                .dateDossier(request.dateDossier())
-                .branchCode(request.branchCode())
-                .createdBy(request.createdBy())
-                .sourceChannel(OriginChannel.AGENCY)
-                .orderAmount(request.orderAmount())
-                .orderCurrency(request.orderCurrency())
-                .transferAmount(request.transferAmount())
-                .transferCurrency(request.transferCurrency())
-                .purposeCode(request.purposeCode())
-                .purposeProprietary(request.purposeProprietary())
-                .remittanceUnstructured(request.remittanceUnstructured())
-                .chargeBearer(request.chargeBearer())
-                .createdAt(LocalDateTime.now())
-                .build();
-    }
+
+
+
+
 
     private void updateOperationHeaderFromDraft(
             MvtTrOperation operation,
             SaveTransferDraftRequest request
     ) {
-        operation.setOrderAmount(request.orderAmount());
-        operation.setOrderCurrency(request.orderCurrency());
-        operation.setTransferAmount(request.transferAmount());
-        operation.setTransferCurrency(request.transferCurrency());
-        operation.setPurposeCode(request.purposeCode());
-        operation.setPurposeProprietary(request.purposeProprietary());
-        operation.setRemittanceUnstructured(request.remittanceUnstructured());
-        operation.setChargeBearer(request.chargeBearer());
-        operation.setUpdatedAt(LocalDateTime.now());
+        if (request.orderAmount() != null) {
+            operation.setMntOrdre(request.orderAmount());
+        }
+
+        if (request.orderCurrency() != null) {
+            operation.setCodeDeviseOrdre(request.orderCurrency());
+        }
+
+        if (request.transferAmount() != null) {
+            operation.setMntDevise(request.transferAmount());
+        }
+
+        if (request.transferCurrency() != null) {
+            operation.setCodeDevise(request.transferCurrency());
+        }
+
+        if (request.valueDate() != null) {
+            operation.setDateValeurTransfert(request.valueDate());
+        }
+
+        if (request.fxRate() != null) {
+            operation.setCoursConversion(request.fxRate());
+        }
+
+        if (request.counterValueTnd() != null) {
+            operation.setContreValeurTnd(request.counterValueTnd());
+        }
+
+        if (request.purposeCode() != null) {
+            operation.setPurposeCode(request.purposeCode());
+        }
+
+        if (request.purposeProprietary() != null) {
+            operation.setPurposeProprietary(request.purposeProprietary());
+        }
+
+        if (request.remittanceUnstructured() != null) {
+            operation.setRemittanceUnstructured(request.remittanceUnstructured());
+        }
+
+        if (request.chargeBearer() != null) {
+            operation.setChargeBearer(request.chargeBearer());
+        }
+
+        if (request.swiftPriority() != null) {
+            operation.setSwiftPriority(request.swiftPriority());
+        }
+
+        if (request.serviceLevelCode() != null) {
+            operation.setServiceLevelCode(request.serviceLevelCode());
+        }
+
+        if (request.localInstrumentCode() != null) {
+            operation.setLocalInstrumentCode(request.localInstrumentCode());
+        }
+
+        if (request.categoryPurposeCode() != null) {
+            operation.setCategoryPurposeCode(request.categoryPurposeCode());
+        }
     }
 
-    private void attachNormalizedOrderData(
-            MvtTrOperation operation,
-            PartyDto debtorDto,
-            AccountDto debtorAccountDto,
-            PartyDto creditorDto,
-            AccountDto creditorAccountDto,
-            FinancialAgentDto creditorAgentDto
+
+    @Transactional
+    public TransferOperationResponse updateDebtor(
+            String operationRef,
+            UpdateDebtorRequest request
     ) {
-        TrParty debtor = orderDataMapper.toParty(debtorDto, PartyRole.DBTR);
-        TrParty creditor = orderDataMapper.toParty(creditorDto, PartyRole.CDTR);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
 
-        operation.addParty(debtor);
-        operation.addParty(creditor);
+        assertEditable(operation);
 
-        operation.addAccount(orderDataMapper.toAccount(
-                debtorAccountDto,
-                AccountRole.DBTR_ACCT,
-                debtor
-        ));
+        removePartiesByRole(
+                operation,
+                PartyRole.ULTMT_DBTR,
+                PartyRole.DBTR
+        );
 
-        operation.addAccount(orderDataMapper.toAccount(
-                creditorAccountDto,
-                AccountRole.CDTR_ACCT,
-                creditor
-        ));
+        removeAccountsByRole(
+                operation,
+                AccountRole.CHARGES_ACCT
+        );
 
-        operation.addFinancialAgent(orderDataMapper.toFinancialAgent(
-                creditorAgentDto,
+        addPartySnapshot(operation, PartyRole.ULTMT_DBTR, request.ultimateDebtor());
+        addPartySnapshot(operation, PartyRole.DBTR, request.debtor());
+        addAccountSnapshot(operation, AccountRole.CHARGES_ACCT, request.chargesAccount());
+
+        syncHeaderShortcutsFromSnapshots(operation);
+
+        MvtTrOperation saved = operationRepository.save(operation);
+
+        eventService.registerEvent(
+                saved,
+                OperationEventType.ORDER_UPDATED,
+                saved.getStatus(),
+                saved.getStatus(),
+                request.updatedBy(),
+                AGENT_SAISIE_ROLE,
+                request.comment(),
+                null
+        );
+
+        return responseMapper.toResponse(saved);
+    }
+
+    private void removePartiesByRole(
+            MvtTrOperation operation,
+            PartyRole... roles
+    ) {
+        if (operation.getParties() == null) {
+            return;
+        }
+
+        List<PartyRole> roleList = Arrays.asList(roles);
+
+        operation.getParties()
+                .removeIf(party -> roleList.contains(party.getPartyRole()));
+    }
+
+    private void removeAccountsByRole(
+            MvtTrOperation operation,
+            AccountRole... roles
+    ) {
+        if (operation.getAccounts() == null) {
+            return;
+        }
+
+        List<AccountRole> roleList = Arrays.asList(roles);
+
+        operation.getAccounts()
+                .removeIf(account -> roleList.contains(account.getAccountRole()));
+    }
+
+    private void removeFinancialAgentsByRole(
+            MvtTrOperation operation,
+            FinancialAgentRole... roles
+    ) {
+        if (operation.getFinancialAgents() == null) {
+            return;
+        }
+
+        List<FinancialAgentRole> roleList = Arrays.asList(roles);
+
+        operation.getFinancialAgents()
+                .removeIf(agent -> roleList.contains(agent.getAgentRole()));
+    }
+
+    @Transactional
+    public TransferOperationResponse updateCreditor(
+            String operationRef,
+            UpdateCreditorRequest request
+    ) {
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
+
+        assertEditable(operation);
+
+        removePartiesByRole(
+                operation,
+                PartyRole.CDTR,
+                PartyRole.ULTMT_CDTR
+        );
+
+        removeAccountsByRole(
+                operation,
+                AccountRole.CDTR_ACCT
+        );
+
+        removeFinancialAgentsByRole(
+                operation,
                 FinancialAgentRole.CDTR_AGT
-        ));
+        );
+
+        addPartySnapshot(operation, PartyRole.CDTR, request.creditor());
+        addPartySnapshot(operation, PartyRole.ULTMT_CDTR, request.ultimateCreditor());
+        addAccountSnapshot(operation, AccountRole.CDTR_ACCT, request.creditorAccount());
+        addFinancialAgentSnapshot(operation, FinancialAgentRole.CDTR_AGT, request.creditorAgent());
+
+        syncHeaderShortcutsFromSnapshots(operation);
+
+        MvtTrOperation saved = operationRepository.save(operation);
+
+        eventService.registerEvent(
+                saved,
+                OperationEventType.ORDER_UPDATED,
+                saved.getStatus(),
+                saved.getStatus(),
+                request.updatedBy(),
+                AGENT_SAISIE_ROLE,
+                request.comment(),
+                null
+        );
+
+        return responseMapper.toResponse(saved);
     }
 
-    private CompletionStatus resolveCompletionStatus(MvtTrOperation operation) {
-        boolean hasAmount = operation.getTransferAmount() != null
-                && notBlank(operation.getTransferCurrency());
+    private void syncHeaderShortcutsFromSnapshots(MvtTrOperation operation) {
+        TrParty ultimateDebtor = findParty(operation, PartyRole.ULTMT_DBTR);
+        TrParty debtor = findParty(operation, PartyRole.DBTR);
+        TrParty creditor = findParty(operation, PartyRole.CDTR);
+        TrParty ultimateCreditor = findParty(operation, PartyRole.ULTMT_CDTR);
 
-        boolean hasDebtor = hasParty(operation, PartyRole.DBTR);
-        boolean hasCreditor = hasParty(operation, PartyRole.CDTR);
+        TrAccount creditorAccount = findAccount(operation, AccountRole.CDTR_ACCT);
+        TrAccount chargesAccount = findAccount(operation, AccountRole.CHARGES_ACCT);
 
-        boolean hasDebtorAccount = hasAccount(operation, AccountRole.DBTR_ACCT);
-        boolean hasCreditorAccount = hasAccount(operation, AccountRole.CDTR_ACCT);
+        operation.setUltimateDebtorId(extractNumericLocalPartyId(ultimateDebtor));
+        operation.setDebtorId(extractNumericLocalPartyId(debtor));
+        operation.setCreditorId(extractNumericLocalPartyId(creditor));
+        operation.setUltimateCreditorId(extractNumericLocalPartyId(ultimateCreditor));
 
-        boolean hasCreditorAgent = hasFinancialAgent(operation, FinancialAgentRole.CDTR_AGT);
+        operation.setNoCompteCreditor(resolveAccountReference(creditorAccount));
+        operation.setNoCompteCommission(resolveAccountReference(chargesAccount));
+    }
 
-        if (hasAmount
-                && hasDebtor
-                && hasCreditor
-                && hasDebtorAccount
-                && hasCreditorAccount
-                && hasCreditorAgent) {
-            return CompletionStatus.COMPLETE;
+    private Long extractNumericLocalPartyId(TrParty party) {
+        if (party == null || party.getLocalPartyId() == null || party.getLocalPartyId().isBlank()) {
+            return null;
         }
 
-        if (hasAmount
-                || hasDebtor
-                || hasCreditor
-                || hasDebtorAccount
-                || hasCreditorAccount
-                || hasCreditorAgent) {
-            return CompletionStatus.PARTIAL;
+        try {
+            return Long.valueOf(party.getLocalPartyId());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String resolveAccountReference(TrAccount account) {
+        if (account == null) {
+            return null;
         }
 
-        return CompletionStatus.EMPTY;
+        if (notBlank(account.getIban())) {
+            return account.getIban();
+        }
+
+        if (notBlank(account.getRibLocal())) {
+            return account.getRibLocal();
+        }
+
+        if (notBlank(account.getCoreAccountId())) {
+            return account.getCoreAccountId();
+        }
+
+        if (notBlank(account.getOtherAccountId())) {
+            return account.getOtherAccountId();
+        }
+
+        return null;
     }
 
-    private boolean hasParty(MvtTrOperation operation, PartyRole role) {
-        return operation.getParties() != null
-                && operation.getParties()
+    private TrParty findParty(MvtTrOperation operation, PartyRole role) {
+        if (operation.getParties() == null) {
+            return null;
+        }
+
+        return operation.getParties()
                 .stream()
-                .anyMatch(party ->
-                        party.getPartyRole() == role
-                                && notBlank(party.getName())
-                );
+                .filter(party -> party.getPartyRole() == role)
+                .findFirst()
+                .orElse(null);
     }
 
-    private boolean hasAccount(MvtTrOperation operation, AccountRole role) {
-        return operation.getAccounts() != null
-                && operation.getAccounts()
+    private TrAccount findAccount(MvtTrOperation operation, AccountRole role) {
+        if (operation.getAccounts() == null) {
+            return null;
+        }
+
+        return operation.getAccounts()
                 .stream()
-                .anyMatch(account ->
-                        account.getAccountRole() == role
-                                && hasAnyAccountIdentifier(account)
-                );
+                .filter(account -> account.getAccountRole() == role)
+                .findFirst()
+                .orElse(null);
     }
 
-    private boolean hasFinancialAgent(MvtTrOperation operation, FinancialAgentRole role) {
-        return operation.getFinancialAgents() != null
-                && operation.getFinancialAgents()
-                .stream()
-                .anyMatch(agent ->
-                        agent.getAgentRole() == role
-                                && (
-                                notBlank(agent.getBicfi())
-                                        || notBlank(agent.getClearingMemberId())
-                                        || notBlank(agent.getAgentName())
-                        )
-                );
+    private boolean notBlank(String value) {
+        return value != null && !value.isBlank();
     }
 
-    private boolean hasAnyAccountIdentifier(TrAccount account) {
-        return notBlank(account.getIban())
-                || notBlank(account.getOtherAccountId())
-                || notBlank(account.getCoreAccountId())
-                || notBlank(account.getRibLocal());
-    }
 
-    private MvtTrOperation findOperationByRef(String operationRef) {
-        return operationRepository.findByOperationRef(operationRef)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Transfer operation not found: " + operationRef
-                ));
-    }
 
     private void assertEditable(MvtTrOperation operation) {
         if (!operation.isEditable()) {
@@ -457,6 +668,145 @@ public class TransferOperationService {
             );
         }
     }
+
+    private void addPartySnapshot(
+            MvtTrOperation operation,
+            PartyRole role,
+            PartyDto dto
+    ) {
+        if (dto == null) {
+            return;
+        }
+
+        TrParty party = new TrParty();
+        party.setPartyRole(role);
+        party.setPartyType(dto.partyType());
+        party.setName(dto.name());
+        party.setLocalPartyId(dto.localPartyId());
+        party.setLocalIdType(dto.localIdType());
+        party.setCustomerCode(dto.customerCode());
+        party.setCountryOfResidence(dto.countryOfResidence());
+        party.setBirthDate(dto.birthDate());
+        party.setCityOfBirth(dto.cityOfBirth());
+        party.setCountryOfBirth(dto.countryOfBirth());
+
+        if (dto.postalAddresses() != null) {
+            List<TrPartyPostalAddress> addresses = dto.postalAddresses()
+                    .stream()
+                    .map(addressDto -> toPostalAddressEntity(party, addressDto))
+                    .toList();
+
+            party.setPostalAddresses(new ArrayList<>(addresses));
+        }
+
+        if (dto.identifications() != null) {
+            List<TrPartyIdentification> identifications = dto.identifications()
+                    .stream()
+                    .map(identificationDto -> toIdentificationEntity(party, identificationDto))
+                    .toList();
+
+            party.setIdentifications(new ArrayList<>(identifications));
+        }
+
+        operation.addParty(party);
+    }
+
+    private TrPartyPostalAddress toPostalAddressEntity(
+            TrParty party,
+            PostalAddressDto dto
+    ) {
+        TrPartyPostalAddress address = new TrPartyPostalAddress();
+
+        address.setParty(party);
+        address.setAddressType(dto.addressType());
+        address.setStreetName(dto.streetName());
+        address.setBuildingNumber(dto.buildingNumber());
+        address.setPostCode(dto.postCode());
+        address.setTownName(dto.townName());
+        address.setCountrySubDivision(dto.countrySubDivision());
+        address.setCountry(dto.country());
+        address.setAddressLine1(dto.addressLine1());
+        address.setAddressLine2(dto.addressLine2());
+        address.setAddressLine3(dto.addressLine3());
+
+        return address;
+    }
+
+    private TrPartyIdentification toIdentificationEntity(
+            TrParty party,
+            PartyIdentificationDto dto
+    ) {
+        TrPartyIdentification identification = new TrPartyIdentification();
+
+        identification.setParty(party);
+        identification.setIdentificationScope(normalizeIdentificationScope(dto.identificationScope()));
+        identification.setIdentificationType(dto.identificationType());
+        identification.setIdentificationValue(dto.identificationValue());
+        identification.setIssuer(dto.issuer());
+        identification.setSchemeNameCode(dto.schemeNameCode());
+        identification.setSchemeNameProprietary(dto.schemeNameProprietary());
+
+        return identification;
+    }
+
+    private String normalizeIdentificationScope(String scope) {
+        if (scope == null || scope.isBlank()) {
+            return "LOCAL";
+        }
+
+        return scope.trim().toUpperCase();
+    }
+
+    private void addAccountSnapshot(
+            MvtTrOperation operation,
+            AccountRole role,
+            AccountDto dto
+    ) {
+        if (dto == null) {
+            return;
+        }
+
+        TrAccount account = new TrAccount();
+
+        account.setAccountRole(role);
+        account.setIban(dto.iban());
+        account.setOtherAccountId(dto.otherAccountId());
+        account.setAccountScheme(dto.accountScheme());
+        account.setAccountCurrency(dto.accountCurrency());
+        account.setAccountName(dto.accountName());
+        account.setCoreAccountId(dto.coreAccountId());
+        account.setRibLocal(dto.ribLocal());
+
+        operation.addAccount(account);
+    }
+
+    private void addFinancialAgentSnapshot(
+            MvtTrOperation operation,
+            FinancialAgentRole role,
+            FinancialAgentDto dto
+    ) {
+        if (dto == null) {
+            return;
+        }
+
+        TrFinancialAgent agent = new TrFinancialAgent();
+
+        agent.setAgentRole(role);
+        agent.setBicfi(dto.bicfi());
+        agent.setLei(dto.lei());
+        agent.setClearingSystemCode(dto.clearingSystemCode());
+        agent.setClearingMemberId(dto.clearingMemberId());
+        agent.setAgentName(dto.agentName());
+        agent.setBranchId(dto.branchId());
+        agent.setBranchName(dto.branchName());
+        agent.setCountry(dto.country());
+        agent.setAddressLine1(dto.addressLine1());
+        agent.setAddressLine2(dto.addressLine2());
+        agent.setTownName(dto.townName());
+
+        operation.addFinancialAgent(agent);
+    }
+
 
     private void registerEvent(
             MvtTrOperation operation,
@@ -468,22 +818,19 @@ public class TransferOperationService {
             String comment,
             String eventPayload
     ) {
-        TrOperationEvent event = TrOperationEvent.builder()
-                .operation(operation)
-                .eventType(eventType)
-                .oldStatus(oldStatus)
-                .newStatus(newStatus)
-                .actorUserId(actorUserId)
-                .actorRole(actorRole)
-                .actionAt(LocalDateTime.now())
-                .commentText(comment)
-                .eventPayload(eventPayload)
-                .build();
-
-        eventRepository.save(event);
+        eventService.registerEvent(
+                operation,
+                eventType,
+                oldStatus,
+                newStatus,
+                actorUserId,
+                actorRole,
+                comment,
+                eventPayload
+        );
     }
 
-    private boolean notBlank(String value) {
-        return value != null && !value.isBlank();
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

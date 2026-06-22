@@ -10,7 +10,7 @@ public interface TrOperationValidationErrorRepository
 
     void deleteByOperation_RefOperation(Long refOperation);
 
-    List<TrOperationValidationError> findByOperation_OperationRefOrderBySectionAscFieldPathAsc(
-            String operationRef
+    List<TrOperationValidationError> findByOperation_RefOperationOrderBySectionAscFieldPathAsc(
+            Long refOperation
     );
 }

@@ -1,3 +1,9 @@
 spring:
   application:
     name: mstr.transfer
+
+downstream:
+  ms-ref:
+    mode: REAL
+    real-base-url: http://ms-ref:8080
+    dummy-base-url: http://localhost:8091

@@ -5,7 +5,6 @@ import com.smi.mstr.transfer.application.payment.PaymentModalityValidator;
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
 import com.smi.mstr.transfer.domain.entity.TrPaymentModality;
 import com.smi.mstr.transfer.domain.enums.OperationEventType;
-import com.smi.mstr.transfer.domain.enums.TransferOperationStatus;
 import com.smi.mstr.transfer.domain.repository.MvtTrOperationRepository;
 import com.smi.mstr.transfer.dto.payment.PaymentModalityDto;
 import com.smi.mstr.transfer.dto.payment.UpdatePaymentModalitiesRequest;
@@ -15,7 +14,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
@@ -28,13 +26,21 @@ public class TransferPaymentService {
     private final PaymentModalityMapper paymentModalityMapper;
     private final PaymentModalityValidator paymentModalityValidator;
     private final TransferOperationEventService eventService;
+    private final TransferOperationLookupService operationLookupService;
 
+    /**
+     * PB-11 — Saisie / mise à jour des modalités de paiement.
+     *
+     * Le paramètre operationRef est conservé côté API pour compatibilité,
+     * mais il correspond maintenant à REF_ORDRE côté base.
+     */
     @Transactional
     public List<PaymentModalityDto> updatePaymentModalities(
             String operationRef,
             UpdatePaymentModalitiesRequest request
     ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
+
         assertEditable(operation);
 
         paymentModalityValidator.validateDtoList(request.modalities());
@@ -44,7 +50,8 @@ public class TransferPaymentService {
         int sequence = 1;
 
         for (PaymentModalityDto dto : request.modalities()) {
-            PaymentModalityDto enrichedDto = enrichTargetAmountAndCurrency(operation, dto);
+            PaymentModalityDto enrichedDto =
+                    enrichTargetAmountAndCurrency(operation, dto);
 
             TrPaymentModality modality =
                     paymentModalityMapper.toEntity(enrichedDto, sequence++);
@@ -54,15 +61,20 @@ public class TransferPaymentService {
             paymentModalityValidator.validateEntity(operation, modality);
         }
 
-        operation.setUpdatedAt(LocalDateTime.now());
-
+        /*
+         * Pas de operation.setUpdatedAt(...)
+         * Le nouveau modèle TR_OPERATION_MVT ne contient plus UPDATED_AT.
+         *
+         * Les modalités sont persistées via cascade + orphanRemoval depuis
+         * MvtTrOperation.paymentModalities.
+         */
         MvtTrOperation saved = operationRepository.save(operation);
 
         eventService.registerEvent(
                 saved,
                 OperationEventType.PAYMENT_MODALITIES_UPDATED,
-                TransferOperationStatus.X,
-                TransferOperationStatus.X,
+                saved.getStatus(),
+                saved.getStatus(),
                 request.updatedBy(),
                 AGENT_SAISIE_ROLE,
                 request.comment(),
@@ -75,9 +87,6 @@ public class TransferPaymentService {
                 .toList();
     }
 
-
-
-
     private PaymentModalityDto enrichTargetAmountAndCurrency(
             MvtTrOperation operation,
             PaymentModalityDto dto
@@ -88,7 +97,7 @@ public class TransferPaymentService {
 
         String targetCurrency = dto.targetCurrency() != null
                 ? dto.targetCurrency()
-                : operation.getTransferCurrency();
+                : operation.getCodeDevise();
 
         return new PaymentModalityDto(
                 dto.modalityId(),
@@ -130,26 +139,24 @@ public class TransferPaymentService {
             MvtTrOperation operation,
             BigDecimal sharePercent
     ) {
-        if (operation.getTransferAmount() == null) {
+        if (operation.getMntDevise() == null) {
             throw new IllegalStateException(
-                    "Transfer amount must be filled before payment modalities."
+                    "Transfer amount MNT_DEVISE must be filled before payment modalities."
             );
         }
 
-        return operation.getTransferAmount()
+        if (sharePercent == null) {
+            throw new IllegalArgumentException(
+                    "Payment modality sharePercent is required."
+            );
+        }
+
+        return operation.getMntDevise()
                 .multiply(sharePercent)
                 .divide(new BigDecimal("100.00"), 3, RoundingMode.HALF_UP);
     }
 
 
-
-
-    private MvtTrOperation findOperationByRef(String operationRef) {
-        return operationRepository.findByOperationRef(operationRef)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Transfer operation not found: " + operationRef
-                ));
-    }
 
     private void assertEditable(MvtTrOperation operation) {
         if (!operation.isEditable()) {
@@ -159,5 +166,4 @@ public class TransferPaymentService {
             );
         }
     }
-
 }

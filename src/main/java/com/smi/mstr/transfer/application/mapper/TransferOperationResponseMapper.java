@@ -23,48 +23,92 @@ import java.util.List;
 public class TransferOperationResponseMapper {
 
     public TransferOperationResponse toResponse(MvtTrOperation operation) {
+        if (operation == null) {
+            return null;
+        }
+
+        TrParty ultimateDebtor = findParty(operation, PartyRole.ULTMT_DBTR);
         TrParty debtor = findParty(operation, PartyRole.DBTR);
         TrParty creditor = findParty(operation, PartyRole.CDTR);
+        TrParty ultimateCreditor = findParty(operation, PartyRole.ULTMT_CDTR);
 
-        TrAccount debtorAccount = findAccount(operation, AccountRole.DBTR_ACCT);
         TrAccount creditorAccount = findAccount(operation, AccountRole.CDTR_ACCT);
+        TrAccount chargesAccount = findAccount(operation, AccountRole.CHARGES_ACCT);
 
-        TrFinancialAgent creditorAgent = findFinancialAgent(operation, FinancialAgentRole.CDTR_AGT);
+        TrFinancialAgent creditorAgent =
+                findFinancialAgent(operation, FinancialAgentRole.CDTR_AGT);
 
         return new TransferOperationResponse(
                 operation.getRefOperation(),
-                operation.getOperationRef(),
-                operation.getStatus(),
-                operation.getCompletionStatus(),
-                operation.getTransferType(),
-                operation.getSwiftPriority(),
 
-                operation.getBranchCode(),
+                operation.getRefOrdre(),
+                operation.getRefOrdre(),
                 operation.getNumDossier(),
+
                 operation.getDateOperation(),
                 operation.getDateDossier(),
 
-                operation.getOrderAmount(),
-                operation.getOrderCurrency(),
-                operation.getTransferAmount(),
-                operation.getTransferCurrency(),
+                operation.getCodeOperation(),
+                operation.getCodeAgence(),
+
+                operation.getStatus(),
+                operation.getTypeTransfert(),
+                operation.getSwiftPriority(),
+
+                ultimateDebtor == null ? null : toPartyDto(ultimateDebtor),
+                debtor == null ? null : toPartyDto(debtor),
+                creditor == null ? null : toPartyDto(creditor),
+                ultimateCreditor == null ? null : toPartyDto(ultimateCreditor),
+
+                creditorAccount == null ? null : toAccountDto(creditorAccount),
+                chargesAccount == null ? null : toAccountDto(chargesAccount),
+
+                creditorAgent == null ? null : toFinancialAgentDto(creditorAgent),
+
+                operation.getUltimateDebtorId(),
+                operation.getDebtorId(),
+                operation.getCreditorId(),
+                operation.getUltimateCreditorId(),
+
+                operation.getNoCompteCommission(),
+                operation.getNoCompteCreditor(),
+
+                operation.getEndToEndId(),
+                operation.getTransactionId(),
+                operation.getUetr(),
+
+                operation.getMntOrdre(),
+                operation.getCodeDeviseOrdre(),
+
+                operation.getMntDevise(),
+                operation.getCodeDevise(),
+
+                operation.getDateValeurTransfert(),
+
+                operation.getCoursConversion(),
+                operation.getContreValeurTnd(),
+
+                operation.getServiceLevelCode(),
+                operation.getLocalInstrumentCode(),
+                operation.getCategoryPurposeCode(),
 
                 operation.getPurposeCode(),
                 operation.getPurposeProprietary(),
                 operation.getRemittanceUnstructured(),
+
                 operation.getChargeBearer(),
 
-                debtor != null ? toPartyDto(debtor) : null,
-                debtorAccount != null ? toAccountDto(debtorAccount) : null,
+                operation.getSourceChannel(),
+                operation.getSourceModule(),
+                operation.getSourceReference(),
 
-                creditor != null ? toPartyDto(creditor) : null,
-                creditorAccount != null ? toAccountDto(creditorAccount) : null,
+                operation.getWorkflowInstanceId(),
+                operation.getWorkflowTaskId(),
+                operation.getWorkflowContextJson(),
 
-                creditorAgent != null ? toFinancialAgentDto(creditorAgent) : null,
-
+                operation.getVersion(),
                 operation.getCreatedAt(),
-                operation.getUpdatedAt(),
-                operation.getVersion()
+                operation.getDateValidation()
         );
     }
 
@@ -92,7 +136,10 @@ public class TransferOperationResponseMapper {
                 .orElse(null);
     }
 
-    private TrFinancialAgent findFinancialAgent(MvtTrOperation operation, FinancialAgentRole role) {
+    private TrFinancialAgent findFinancialAgent(
+            MvtTrOperation operation,
+            FinancialAgentRole role
+    ) {
         if (operation.getFinancialAgents() == null) {
             return null;
         }
@@ -145,7 +192,9 @@ public class TransferOperationResponseMapper {
         );
     }
 
-    private PartyIdentificationDto toPartyIdentificationDto(TrPartyIdentification identification) {
+    private PartyIdentificationDto toPartyIdentificationDto(
+            TrPartyIdentification identification
+    ) {
         return new PartyIdentificationDto(
                 identification.getIdentificationScope(),
                 identification.getIdentificationType(),

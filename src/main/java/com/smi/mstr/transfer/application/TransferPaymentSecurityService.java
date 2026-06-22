@@ -1,6 +1,5 @@
 package com.smi.mstr.transfer.application;
 
-import com.smi.mstr.transfer.application.payment.PaymentSecurityCalculationService;
 import com.smi.mstr.transfer.application.payment.PaymentSecurityClient;
 import com.smi.mstr.transfer.application.payment.PaymentSecurityCommand;
 import com.smi.mstr.transfer.application.payment.strategy.PaymentModalityHandlerRegistry;
@@ -30,23 +29,33 @@ public class TransferPaymentSecurityService {
     private static final String AGENT_SAISIE_ROLE = "AGENT_SAISIE";
 
     private final MvtTrOperationRepository operationRepository;
-    private final PaymentSecurityCalculationService calculationService;
     private final PaymentSecurityClient securityClient;
     private final TransferOperationEventService eventService;
     private final PaymentModalityHandlerRegistry handlerRegistry;
+    private final TransferOperationLookupService operationLookupService;
 
+    /**
+     * PB-13 — Sécuriser / bloquer / réserver les ressources de paiement.
+     *
+     * Le paramètre operationRef est conservé côté API pour compatibilité,
+     * mais il correspond maintenant à REF_ORDRE côté base.
+     */
     @Transactional
     public PaymentSecurityReport securePayment(
             String operationRef,
             SecurePaymentRequest request
     ) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
+
         assertEditable(operation);
 
         LocalDateTime securedAt = LocalDateTime.now();
 
-        List<PaymentSecurityItemDto> results = operation.getPaymentModalities()
-                .stream()
+        List<TrPaymentModality> modalities = operation.getPaymentModalities() == null
+                ? List.of()
+                : operation.getPaymentModalities();
+
+        List<PaymentSecurityItemDto> results = modalities.stream()
                 .map(modality -> secureOne(
                         operation,
                         modality,
@@ -57,7 +66,13 @@ public class TransferPaymentSecurityService {
 
         PaymentSecurityStatus overallStatus = resolveOverallStatus(results);
 
-        operation.setUpdatedAt(LocalDateTime.now());
+        /*
+         * Pas de operation.setUpdatedAt(...)
+         * Le nouveau modèle TR_OPERATION_MVT ne contient plus UPDATED_AT.
+         *
+         * Les modifications sur TR_PAYMENT_MODALITY et TR_PAYMENT_SECURITY
+         * sont persistées via dirty checking + cascade dans la transaction.
+         */
         operationRepository.save(operation);
 
         eventService.registerEvent(
@@ -72,20 +87,34 @@ public class TransferPaymentSecurityService {
         );
 
         return new PaymentSecurityReport(
-                operationRef,
+                operation.getRefOrdre(),
                 overallStatus,
                 securedAt,
                 results
         );
     }
 
+    /**
+     * PB-14 — Consulter le statut de sécurisation / blocage.
+     *
+     * Les securities sont chargées lazy à l'intérieur de la transaction readOnly.
+     */
     @Transactional(readOnly = true)
     public List<PaymentSecurityItemDto> getPaymentSecurityStatus(String operationRef) {
-        MvtTrOperation operation = findOperationByRef(operationRef);
+        MvtTrOperation operation = operationLookupService.findByReference(operationRef);
 
-        return operation.getPaymentModalities()
-                .stream()
-                .flatMap(modality -> modality.getSecurities().stream())
+        List<TrPaymentModality> modalities = operation.getPaymentModalities() == null
+                ? List.of()
+                : operation.getPaymentModalities();
+
+        return modalities.stream()
+                .flatMap(modality -> {
+                    if (modality.getSecurities() == null) {
+                        return List.<TrPaymentSecurity>of().stream();
+                    }
+
+                    return modality.getSecurities().stream();
+                })
                 .map(this::toDto)
                 .toList();
     }
@@ -96,6 +125,30 @@ public class TransferPaymentSecurityService {
             BigDecimal estimatedFeesAmount,
             String estimatedFeesCurrency
     ) {
+        if (modality.getModalityType() == null) {
+            modality.setSecurityStatus(PaymentSecurityStatus.FAILED);
+
+            return new PaymentSecurityItemDto(
+                    null,
+                    modality.getModalityId(),
+                    null,
+                    PaymentSecurityStatus.FAILED,
+                    null,
+                    modality.getTargetAmount(),
+                    modality.getTargetCurrency(),
+                    null,
+                    null,
+                    null,
+                    estimatedFeesAmount,
+                    estimatedFeesCurrency,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "Payment modality type is missing."
+            );
+        }
+
         if (modality.getAvailabilityStatus() != PaymentResourceAvailabilityStatus.AVAILABLE) {
             modality.setSecurityStatus(PaymentSecurityStatus.REQUIRED_NOT_SECURED);
 
@@ -134,7 +187,7 @@ public class TransferPaymentSecurityService {
         PaymentSecurityItemDto result = securityClient.secure(command);
 
         TrPaymentSecurity security = TrPaymentSecurity.builder()
-                .operation(modality.getOperation())
+                .operation(operation)
                 .modality(modality)
                 .resourceType(result.resourceType())
                 .securityStatus(result.securityStatus())
@@ -162,7 +215,9 @@ public class TransferPaymentSecurityService {
     private PaymentSecurityItemDto toDto(TrPaymentSecurity security) {
         return new PaymentSecurityItemDto(
                 security.getSecurityId(),
-                security.getModality().getModalityId(),
+                security.getModality() == null
+                        ? null
+                        : security.getModality().getModalityId(),
                 security.getResourceType(),
                 security.getSecurityStatus(),
                 security.getResourceRef(),
@@ -181,32 +236,31 @@ public class TransferPaymentSecurityService {
         );
     }
 
-    private PaymentSecurityStatus resolveOverallStatus(List<PaymentSecurityItemDto> results) {
-        if (results.isEmpty()) {
+    private PaymentSecurityStatus resolveOverallStatus(
+            List<PaymentSecurityItemDto> results
+    ) {
+        if (results == null || results.isEmpty()) {
             return PaymentSecurityStatus.NOT_REQUIRED;
         }
 
-        if (results.stream().anyMatch(r -> r.securityStatus() == PaymentSecurityStatus.FAILED)) {
+        if (results.stream().anyMatch(r ->
+                r.securityStatus() == PaymentSecurityStatus.FAILED)) {
             return PaymentSecurityStatus.FAILED;
         }
 
-        if (results.stream().anyMatch(r -> r.securityStatus() == PaymentSecurityStatus.REQUIRED_NOT_SECURED)) {
+        if (results.stream().anyMatch(r ->
+                r.securityStatus() == PaymentSecurityStatus.REQUIRED_NOT_SECURED)) {
             return PaymentSecurityStatus.REQUIRED_NOT_SECURED;
         }
 
-        if (results.stream().allMatch(r -> r.securityStatus() == PaymentSecurityStatus.SECURED)) {
+        if (results.stream().allMatch(r ->
+                r.securityStatus() == PaymentSecurityStatus.SECURED)) {
             return PaymentSecurityStatus.SECURED;
         }
 
         return PaymentSecurityStatus.NOT_REQUIRED;
     }
 
-    private MvtTrOperation findOperationByRef(String operationRef) {
-        return operationRepository.findByOperationRef(operationRef)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Transfer operation not found: " + operationRef
-                ));
-    }
 
     private void assertEditable(MvtTrOperation operation) {
         if (!operation.isEditable()) {
