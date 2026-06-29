@@ -1,154 +1,150 @@
 package com.smi.mstr.transfer.domain.repository;
 
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
+import com.smi.mstr.transfer.domain.enums.OriginChannel;
 import com.smi.mstr.transfer.domain.enums.TransferOperationStatus;
-import org.springframework.data.jpa.repository.EntityGraph;
+import com.smi.mstr.transfer.domain.enums.TransferType;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 public interface MvtTrOperationRepository extends JpaRepository<MvtTrOperation, Long> {
 
-    /**
-     * Recherche par référence métier de l'ordre.
-     *
-     * Ancien équivalent :
-     * operationRef
-     *
-     * Nouveau champ :
-     * REF_ORDRE
-     */
+    Optional<MvtTrOperation> findByRefOperation(Long refOperation);
+
     Optional<MvtTrOperation> findByRefOrdre(String refOrdre);
 
+    Optional<MvtTrOperation> findByUetr(String uetr);
+
+    Optional<MvtTrOperation> findByTransactionId(String transactionId);
+
+    Optional<MvtTrOperation> findByEndToEndId(String endToEndId);
+
+    Optional<MvtTrOperation> findByCorrelationId(String correlationId);
 
     boolean existsByRefOrdre(String refOrdre);
 
-    /**
-     * Recherche par numéro de dossier.
-     */
-    Optional<MvtTrOperation> findByNumDossier(String numDossier);
+    boolean existsByUetr(String uetr);
 
-    /**
-     * Recherche par clé technique BD.
-     *
-     * REF_OPERATION = clé primaire technique.
-     */
-    Optional<MvtTrOperation> findByRefOperation(Long refOperation);
+    boolean existsByTransactionId(String transactionId);
 
-    /**
-     * Liste des opérations par statut.
-     */
+    boolean existsByEndToEndId(String endToEndId);
+
     List<MvtTrOperation> findByStatusOrderByCreatedAtDesc(
             TransferOperationStatus status
     );
 
-    /**
-     * Ancien branchCode -> nouveau codeAgence.
-     */
+    Page<MvtTrOperation> findByStatusOrderByCreatedAtDesc(
+            TransferOperationStatus status,
+            Pageable pageable
+    );
+
+    List<MvtTrOperation> findByStatusInOrderByCreatedAtDesc(
+            Collection<TransferOperationStatus> statuses
+    );
+
+    Page<MvtTrOperation> findByStatusInOrderByCreatedAtDesc(
+            Collection<TransferOperationStatus> statuses,
+            Pageable pageable
+    );
+
     List<MvtTrOperation> findByCodeAgenceAndStatusOrderByCreatedAtDesc(
             String codeAgence,
             TransferOperationStatus status
     );
 
-    /**
-     * Vue détail opération.
-     *
-     * Dans le nouveau modèle, les parties principales sont portées par :
-     * ULTIMATE_DEBTOR_ID, DEBTOR_ID, CREDITOR_ID, ULTIMATE_CREDITOR_ID.
-     *
-     * Donc on ne charge plus :
-     * parties, postalAddresses, identifications, accounts, financialAgents
-     * sauf si vous décidez ensuite de les remapper comme relations JPA.
-     */
-    @Query("""
-            select o
-            from MvtTrOperation o
-            where o.refOrdre = :refOrdre
-            """)
-    Optional<MvtTrOperation> findDetailedByRefOrdre(
-            @Param("refOrdre") String refOrdre
+    Page<MvtTrOperation> findByCodeAgenceAndStatusOrderByCreatedAtDesc(
+            String codeAgence,
+            TransferOperationStatus status,
+            Pageable pageable
     );
 
-    /**
-     * Vue PB-15 : résultat modalités / disponibilité / sécurisation.
-     *
-     * Important :
-     * Ne pas fetcher paymentModalities + paymentModalities.securities ensemble
-     * si les deux sont des List, sinon Hibernate lève MultipleBagFetchException.
-     *
-     * On fetch seulement paymentModalities.
-     * Les securities seront chargées lazy dans un service @Transactional.
-     */
-    @EntityGraph(attributePaths = {
-            "paymentModalities"
-    })
-    @Query("""
-        select o
-        from MvtTrOperation o
-        where o.refOrdre = :refOrdre
-        """)
-    Optional<MvtTrOperation> findPaymentReviewByRefOrdre(
-            @Param("refOrdre") String refOrdre
+    Page<MvtTrOperation> findByCodeAgenceAndStatusInOrderByCreatedAtDesc(
+            String codeAgence,
+            Collection<TransferOperationStatus> statuses,
+            Pageable pageable
     );
 
-    /**
-     * Variante par REF_OPERATION technique, utile pour traitements internes.
-     */
-    @EntityGraph(attributePaths = {
-            "paymentModalities"
-    })
+    Page<MvtTrOperation> findByTypeTransfertAndStatusOrderByCreatedAtDesc(
+            TransferType typeTransfert,
+            TransferOperationStatus status,
+            Pageable pageable
+    );
+
+    Page<MvtTrOperation> findBySourceChannelAndStatusOrderByCreatedAtDesc(
+            OriginChannel sourceChannel,
+            TransferOperationStatus status,
+            Pageable pageable
+    );
+
+    List<MvtTrOperation> findByWorkflowInstanceIdOrderByCreatedAtDesc(
+            String workflowInstanceId
+    );
+
+    Optional<MvtTrOperation> findByWorkflowTaskId(String workflowTaskId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             select o
             from MvtTrOperation o
             where o.refOperation = :refOperation
             """)
-    Optional<MvtTrOperation> findPaymentReviewByRefOperation(
+    Optional<MvtTrOperation> findByRefOperationForUpdate(
             @Param("refOperation") Long refOperation
     );
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select o
+            from MvtTrOperation o
+            where o.refOrdre = :refOrdre
+            """)
+    Optional<MvtTrOperation> findByRefOrdreForUpdate(
+            @Param("refOrdre") String refOrdre
+    );
 
-    @Deprecated
-    default Optional<MvtTrOperation> findPaymentReviewByOperationRef(String operationRef) {
-        return findPaymentReviewByRefOrdre(operationRef);
-    }
+    @Query("""
+            select o
+            from MvtTrOperation o
+            where (:status is null or o.status = :status)
+              and (:typeTransfert is null or o.typeTransfert = :typeTransfert)
+              and (:codeAgence is null or o.codeAgence = :codeAgence)
+              and (:dateFrom is null or o.dateOperation >= :dateFrom)
+              and (:dateTo is null or o.dateOperation <= :dateTo)
+            order by o.createdAt desc
+            """)
+    Page<MvtTrOperation> searchOperations(
+            @Param("status") TransferOperationStatus status,
+            @Param("typeTransfert") TransferType typeTransfert,
+            @Param("codeAgence") String codeAgence,
+            @Param("dateFrom") LocalDate dateFrom,
+            @Param("dateTo") LocalDate dateTo,
+            Pageable pageable
+    );
 
+    @Query("""
+            select count(o)
+            from MvtTrOperation o
+            where o.status = :status
+              and o.createdAt >= :createdAfter
+            """)
+    long countByStatusCreatedAfter(
+            @Param("status") TransferOperationStatus status,
+            @Param("createdAfter") LocalDateTime createdAfter
+    );
 
-
-
-    // ---------------------------------------------------------------------
-    // Compatibility layer temporaire
-    // ---------------------------------------------------------------------
-    // Ces méthodes permettent de garder temporairement les anciens services
-    // qui appellent encore operationRef.
-    // Elles délèguent maintenant vers refOrdre.
-    // À supprimer une fois tous les services refactorés.
-    // ---------------------------------------------------------------------
-
-    @Deprecated
-    default Optional<MvtTrOperation> findByOperationRef(String operationRef) {
-        return findByRefOrdre(operationRef);
-    }
-
-    @Deprecated
-    default boolean existsByOperationRef(String operationRef) {
-        return existsByRefOrdre(operationRef);
-    }
-
-    @Deprecated
-    default List<MvtTrOperation> findByBranchCodeAndStatusOrderByCreatedAtDesc(
-            String branchCode,
-            TransferOperationStatus status
-    ) {
-        return findByCodeAgenceAndStatusOrderByCreatedAtDesc(branchCode, status);
-    }
-
-    @Deprecated
-    default Optional<MvtTrOperation> findDetailedByOperationRef(String operationRef) {
-        return findDetailedByRefOrdre(operationRef);
-    }
-
-
+    boolean existsByRefOrdreAndRefOperationNot(
+            String refOrdre,
+            Long refOperation
+    );
 }

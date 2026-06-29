@@ -29,9 +29,44 @@ public class TransferOperationLookupService {
                 ));
     }
 
+    @Transactional(readOnly = true)
+    public Optional<MvtTrOperation> findOptionalByReference(String operationRef) {
+        if (operationRef == null || operationRef.isBlank()) {
+            return Optional.empty();
+        }
+
+        String value = operationRef.trim();
+
+        return operationRepository.findByRefOrdre(value)
+                .or(() -> findByNumericRefOperation(value));
+    }
+
+    @Transactional
+    public MvtTrOperation findByReferenceForUpdate(String operationRef) {
+        if (operationRef == null || operationRef.isBlank()) {
+            throw new IllegalArgumentException("Transfer operation reference is required.");
+        }
+
+        String value = operationRef.trim();
+
+        return operationRepository.findByRefOrdreForUpdate(value)
+                .or(() -> findByNumericRefOperationForUpdate(value))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Transfer operation not found: " + operationRef
+                ));
+    }
+
     private Optional<MvtTrOperation> findByNumericRefOperation(String value) {
         try {
             return operationRepository.findByRefOperation(Long.valueOf(value));
+        } catch (NumberFormatException e) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<MvtTrOperation> findByNumericRefOperationForUpdate(String value) {
+        try {
+            return operationRepository.findByRefOperationForUpdate(Long.valueOf(value));
         } catch (NumberFormatException e) {
             return Optional.empty();
         }

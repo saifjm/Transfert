@@ -1,22 +1,14 @@
 package com.smi.mstr.transfer.application.mapper;
 
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
-import com.smi.mstr.transfer.domain.entity.TrAccount;
-import com.smi.mstr.transfer.domain.entity.TrFinancialAgent;
 import com.smi.mstr.transfer.domain.entity.TrParty;
-import com.smi.mstr.transfer.domain.entity.TrPartyIdentification;
-import com.smi.mstr.transfer.domain.entity.TrPartyPostalAddress;
-import com.smi.mstr.transfer.domain.enums.AccountRole;
-import com.smi.mstr.transfer.domain.enums.FinancialAgentRole;
-import com.smi.mstr.transfer.domain.enums.PartyRole;
+import com.smi.mstr.transfer.domain.entity.TrPaymentModality;
+import com.smi.mstr.transfer.domain.entity.TrSupportReglementaire;
 import com.smi.mstr.transfer.dto.TransferOperationResponse;
-import com.smi.mstr.transfer.dto.normalized.AccountDto;
-import com.smi.mstr.transfer.dto.normalized.FinancialAgentDto;
-import com.smi.mstr.transfer.dto.normalized.PartyDto;
-import com.smi.mstr.transfer.dto.normalized.PartyIdentificationDto;
-import com.smi.mstr.transfer.dto.normalized.PostalAddressDto;
+import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
+import java.util.Comparator;
 import java.util.List;
 
 @Component
@@ -27,51 +19,34 @@ public class TransferOperationResponseMapper {
             return null;
         }
 
-        TrParty ultimateDebtor = findParty(operation, PartyRole.ULTMT_DBTR);
-        TrParty debtor = findParty(operation, PartyRole.DBTR);
-        TrParty creditor = findParty(operation, PartyRole.CDTR);
-        TrParty ultimateCreditor = findParty(operation, PartyRole.ULTMT_CDTR);
-
-        TrAccount creditorAccount = findAccount(operation, AccountRole.CDTR_ACCT);
-        TrAccount chargesAccount = findAccount(operation, AccountRole.CHARGES_ACCT);
-
-        TrFinancialAgent creditorAgent =
-                findFinancialAgent(operation, FinancialAgentRole.CDTR_AGT);
-
         return new TransferOperationResponse(
                 operation.getRefOperation(),
-
-                operation.getRefOrdre(),
+                resolveOperationRef(operation),
                 operation.getRefOrdre(),
                 operation.getNumDossier(),
 
                 operation.getDateOperation(),
                 operation.getDateDossier(),
+                operation.getDateValidation(),
+                operation.getCreatedAt(),
 
-                operation.getCodeOperation(),
                 operation.getCodeAgence(),
+                operation.getSourceChannel(),
+                operation.getSourceModule(),
+                operation.getSourceReference(),
+                operation.getWorkflowInstanceId(),
+                operation.getWorkflowTaskId(),
+                operation.getCorrelationId(),
 
-                operation.getStatus(),
                 operation.getTypeTransfert(),
-                operation.getSwiftPriority(),
+                operation.getCodeOperation(),
+                operation.getCodeNatureOperation(),
 
-                ultimateDebtor == null ? null : toPartyDto(ultimateDebtor),
-                debtor == null ? null : toPartyDto(debtor),
-                creditor == null ? null : toPartyDto(creditor),
-                ultimateCreditor == null ? null : toPartyDto(ultimateCreditor),
-
-                creditorAccount == null ? null : toAccountDto(creditorAccount),
-                chargesAccount == null ? null : toAccountDto(chargesAccount),
-
-                creditorAgent == null ? null : toFinancialAgentDto(creditorAgent),
-
-                operation.getUltimateDebtorId(),
-                operation.getDebtorId(),
-                operation.getCreditorId(),
-                operation.getUltimateCreditorId(),
-
-                operation.getNoCompteCommission(),
-                operation.getNoCompteCreditor(),
+                operation.getNumAutorisationBct(),
+                operation.getDateAutorisationBct(),
+                operation.getTypeDossierReg(),
+                operation.getNumDossierReg(),
+                operation.getDateDossierReg(),
 
                 operation.getEndToEndId(),
                 operation.getTransactionId(),
@@ -79,157 +54,269 @@ public class TransferOperationResponseMapper {
 
                 operation.getMntOrdre(),
                 operation.getCodeDeviseOrdre(),
-
                 operation.getMntDevise(),
                 operation.getCodeDevise(),
-
                 operation.getDateValeurTransfert(),
-
                 operation.getCoursConversion(),
                 operation.getContreValeurTnd(),
 
+                operation.getSwiftPriority(),
                 operation.getServiceLevelCode(),
                 operation.getLocalInstrumentCode(),
                 operation.getCategoryPurposeCode(),
-
                 operation.getPurposeCode(),
                 operation.getPurposeProprietary(),
                 operation.getRemittanceUnstructured(),
-
                 operation.getChargeBearer(),
 
-                operation.getSourceChannel(),
-                operation.getSourceModule(),
-                operation.getSourceReference(),
+                operation.getRouteType(),
+                operation.getCoverRequired(),
+                operation.getSettlementMethod(),
+                operation.getSettlementAccountRef(),
 
-                operation.getWorkflowInstanceId(),
-                operation.getWorkflowTaskId(),
-                operation.getWorkflowContextJson(),
+                operation.getStatus(),
 
-                operation.getVersion(),
-                operation.getCreatedAt(),
-                operation.getDateValidation()
+                mapParties(operation.getParties()),
+                mapPaymentModalities(operation.getPaymentModalities()),
+                mapRegulatorySupports(operation.getSupportsReglementaires())
         );
     }
 
-    private TrParty findParty(MvtTrOperation operation, PartyRole role) {
-        if (operation.getParties() == null) {
-            return null;
-        }
-
-        return operation.getParties()
-                .stream()
-                .filter(party -> party.getPartyRole() == role)
-                .findFirst()
-                .orElse(null);
-    }
-
-    private TrAccount findAccount(MvtTrOperation operation, AccountRole role) {
-        if (operation.getAccounts() == null) {
-            return null;
-        }
-
-        return operation.getAccounts()
-                .stream()
-                .filter(account -> account.getAccountRole() == role)
-                .findFirst()
-                .orElse(null);
-    }
-
-    private TrFinancialAgent findFinancialAgent(
-            MvtTrOperation operation,
-            FinancialAgentRole role
+    public List<TransferOperationResponse> toResponseList(
+            List<MvtTrOperation> operations
     ) {
-        if (operation.getFinancialAgents() == null) {
-            return null;
+        if (operations == null || operations.isEmpty()) {
+            return List.of();
         }
 
-        return operation.getFinancialAgents()
-                .stream()
-                .filter(agent -> agent.getAgentRole() == role)
-                .findFirst()
-                .orElse(null);
+        return operations.stream()
+                .map(this::toResponse)
+                .toList();
     }
 
-    private PartyDto toPartyDto(TrParty party) {
-        return new PartyDto(
+    public Page<TransferOperationResponse> toResponsePage(
+            Page<MvtTrOperation> operations
+    ) {
+        if (operations == null) {
+            return Page.empty();
+        }
+
+        return operations.map(this::toResponse);
+    }
+
+    private List<TransferOperationResponse.PartyResponse> mapParties(
+            List<TrParty> parties
+    ) {
+        if (parties == null || parties.isEmpty()) {
+            return List.of();
+        }
+
+        return parties.stream()
+                .sorted(
+                        Comparator
+                                .comparing(
+                                        TrParty::getPartyRole,
+                                        Comparator.nullsLast(Comparator.naturalOrder())
+                                )
+                                .thenComparing(
+                                        TrParty::getSequenceNo,
+                                        Comparator.nullsLast(Comparator.naturalOrder())
+                                )
+                )
+                .map(this::mapParty)
+                .toList();
+    }
+
+    private TransferOperationResponse.PartyResponse mapParty(TrParty party) {
+        return new TransferOperationResponse.PartyResponse(
+                party.getIdParty(),
+                party.getSequenceNo(),
+
+                party.getPartyRole(),
                 party.getPartyType(),
+
+                party.getCustomerId(),
+                party.getExternalPartyRef(),
                 party.getName(),
-                party.getLocalPartyId(),
-                party.getLocalIdType(),
-                party.getCustomerCode(),
-                party.getCountryOfResidence(),
-                party.getBirthDate(),
-                party.getCityOfBirth(),
-                party.getCountryOfBirth(),
-                party.getPostalAddresses() == null
-                        ? List.of()
-                        : party.getPostalAddresses()
-                          .stream()
-                          .map(this::toPostalAddressDto)
-                          .toList(),
-                party.getIdentifications() == null
-                        ? List.of()
-                        : party.getIdentifications()
-                          .stream()
-                          .map(this::toPartyIdentificationDto)
-                          .toList()
+                party.getCountryCode(),
+                party.getResidencyStatus(),
+
+                party.getIdentificationType(),
+                party.getIdentificationValue(),
+                party.getIdentificationIssuer(),
+                party.getIdentificationScheme(),
+                party.getLei(),
+
+                party.getAddressLine1(),
+                party.getAddressLine2(),
+                party.getAddressLine3(),
+                party.getTownName(),
+                party.getPostCode(),
+                party.getCountrySubDivision(),
+
+                party.getAccountNumber(),
+                party.getAccountIban(),
+                party.getAccountScheme(),
+                party.getAccountCurrency(),
+                party.getAccountType(),
+                party.getAccountName(),
+
+                party.getBic(),
+                party.getBankCode(),
+                party.getBankName(),
+                party.getBankBranchCode(),
+                party.getBankBranchName(),
+                party.getBankCountryCode(),
+                party.getClearingSystemCode(),
+                party.getClearingMemberId(),
+
+                party.getAgentPosition(),
+                party.getRoutingRole(),
+
+                party.getSourceSystem(),
+                party.getSourceReference(),
+
+                party.getCreatedAt(),
+                party.getUpdatedAt()
         );
     }
 
-    private PostalAddressDto toPostalAddressDto(TrPartyPostalAddress address) {
-        return new PostalAddressDto(
-                address.getAddressType(),
-                address.getStreetName(),
-                address.getBuildingNumber(),
-                address.getPostCode(),
-                address.getTownName(),
-                address.getCountrySubDivision(),
-                address.getCountry(),
-                address.getAddressLine1(),
-                address.getAddressLine2(),
-                address.getAddressLine3()
-        );
-    }
-
-    private PartyIdentificationDto toPartyIdentificationDto(
-            TrPartyIdentification identification
+    private List<TransferOperationResponse.PaymentModalityResponse> mapPaymentModalities(
+            List<TrPaymentModality> modalities
     ) {
-        return new PartyIdentificationDto(
-                identification.getIdentificationScope(),
-                identification.getIdentificationType(),
-                identification.getIdentificationValue(),
-                identification.getIssuer(),
-                identification.getSchemeNameCode(),
-                identification.getSchemeNameProprietary()
+        if (modalities == null || modalities.isEmpty()) {
+            return List.of();
+        }
+
+        return modalities.stream()
+                .sorted(
+                        Comparator.comparing(
+                                TrPaymentModality::getSequenceNo,
+                                Comparator.nullsLast(Comparator.naturalOrder())
+                        )
+                )
+                .map(this::mapPaymentModality)
+                .toList();
+    }
+
+    private TransferOperationResponse.PaymentModalityResponse mapPaymentModality(
+            TrPaymentModality modality
+    ) {
+        return new TransferOperationResponse.PaymentModalityResponse(
+                modality.getIdPaymentModality(),
+                modality.getSequenceNo(),
+
+                modality.getModalityType(),
+
+                modality.getCoveragePercentage(),
+                modality.getCoveredTransferAmount(),
+                modality.getCoveredTransferCurrency(),
+
+                modality.getDebitAccountNumber(),
+                modality.getDebitAccountCurrency(),
+                modality.getDebitAmount(),
+
+                modality.getFxRequired(),
+                modality.getFxType(),
+                modality.getFxRate(),
+                modality.getFxRateDate(),
+                modality.getFxReference(),
+
+                modality.getResourceType(),
+                modality.getResourceReference(),
+
+                modality.getBlockingRequired(),
+                modality.getBlockingStatus(),
+                modality.getBlockingReference(),
+                modality.getBlockedAmount(),
+                modality.getBlockedCurrency(),
+                modality.getBlockedAt(),
+
+                modality.getImpactStatus(),
+                modality.getImpactReference(),
+                modality.getImpactedAt(),
+
+                modality.getModalityStatus(),
+
+                modality.getCreatedAt(),
+                modality.getUpdatedAt()
         );
     }
 
-    private AccountDto toAccountDto(TrAccount account) {
-        return new AccountDto(
-                account.getIban(),
-                account.getOtherAccountId(),
-                account.getAccountScheme(),
-                account.getAccountCurrency(),
-                account.getAccountName(),
-                account.getCoreAccountId(),
-                account.getRibLocal()
+    private List<TransferOperationResponse.RegulatorySupportResponse> mapRegulatorySupports(
+            List<TrSupportReglementaire> supports
+    ) {
+        if (supports == null || supports.isEmpty()) {
+            return List.of();
+        }
+
+        return supports.stream()
+                .sorted(
+                        Comparator.comparing(
+                                TrSupportReglementaire::getSequenceNo,
+                                Comparator.nullsLast(Comparator.naturalOrder())
+                        )
+                )
+                .map(this::mapRegulatorySupport)
+                .toList();
+    }
+
+    private TransferOperationResponse.RegulatorySupportResponse mapRegulatorySupport(
+            TrSupportReglementaire support
+    ) {
+        return new TransferOperationResponse.RegulatorySupportResponse(
+                support.getIdSupport(),
+                support.getSequenceNo(),
+
+                support.getTypeSupport(),
+                support.getCodeSupportBct(),
+
+                support.getNumSupport(),
+                support.getDateSupport(),
+                support.getAutoriteEmettrice(),
+
+                support.getNumIdentification(),
+                support.getDateIdentification(),
+
+                support.getCodeRd(),
+                support.getModeReglement(),
+                support.getNumMessageSwift(),
+                support.getCodeBanque(),
+
+                support.getDeviseSupport(),
+                support.getMontantAutorise(),
+                support.getMontantUtiliseAvant(),
+                support.getMontantReserve(),
+                support.getMontantUtiliseCourant(),
+                support.getReliquatAvant(),
+                support.getReliquatApres(),
+                support.getMontantTnd(),
+                support.getCoursConversion(),
+
+                support.getStatutSupport(),
+                support.getStatutValidation(),
+                support.getStatutReservation(),
+                support.getStatutImputation(),
+
+                support.getMessageValidation(),
+
+                support.getSourceSystem(),
+                support.getSourceReference(),
+
+                support.getCreatedAt(),
+                support.getUpdatedAt()
         );
     }
 
-    private FinancialAgentDto toFinancialAgentDto(TrFinancialAgent agent) {
-        return new FinancialAgentDto(
-                agent.getBicfi(),
-                agent.getLei(),
-                agent.getClearingSystemCode(),
-                agent.getClearingMemberId(),
-                agent.getAgentName(),
-                agent.getBranchId(),
-                agent.getBranchName(),
-                agent.getCountry(),
-                agent.getAddressLine1(),
-                agent.getAddressLine2(),
-                agent.getTownName()
-        );
+    private String resolveOperationRef(MvtTrOperation operation) {
+        if (operation.getRefOrdre() != null && !operation.getRefOrdre().isBlank()) {
+            return operation.getRefOrdre();
+        }
+
+        if (operation.getRefOperation() != null) {
+            return String.valueOf(operation.getRefOperation());
+        }
+
+        return null;
     }
 }

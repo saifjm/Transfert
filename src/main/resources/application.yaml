@@ -7,3 +7,39 @@ downstream:
     mode: REAL
     real-base-url: http://ms-ref:8080
     dummy-base-url: http://localhost:8091
+  payment-blocking:
+    mode: MOCK
+mock:
+  payment-blocking:
+    enabled: true
+    fail-on-reference-containing: FAIL
+    partial-on-reference-containing: PARTIAL
+    insufficient-on-reference-containing: LOW
+    default-processing-delay-ms: 0
+
+
+ms-tr:
+  operation-codes:
+    default-commercial: 3101
+    default-financial: 4101
+
+    by-node:
+      AGENCY_INITIATION:
+        commercial: 3101
+        financial: 4101
+
+      DIGITAL_CHANNEL_INITIATION:
+        commercial: 3201
+        financial: 4201
+
+      PACS008_INITIATION:
+        commercial: 3301
+        financial: 5101
+
+      BACK_OFFICE_INTERBANK_SELECTION:
+        commercial: 3101
+        financial: 4101
+
+      BACK_OFFICE_VALIDATION:
+        commercial: 3101
+        financial: 4101

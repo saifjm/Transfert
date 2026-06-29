@@ -1,10 +1,5 @@
 package com.smi.mstr.transfer.e2e;
 
-import com.smi.mstr.transfer.domain.enums.PartyType;
-import com.smi.mstr.transfer.domain.enums.SwiftPriority;
-import com.smi.mstr.transfer.domain.enums.TransferType;
-import com.smi.mstr.transfer.domain.repository.MvtTrOperationRepository;
-import com.smi.mstr.transfer.domain.repository.TrOperationEventRepository;
 import com.smi.mstr.transfer.dto.CreateTransferOrderRequest;
 import com.smi.mstr.transfer.dto.SaveTransferDraftRequest;
 import com.smi.mstr.transfer.dto.normalized.AccountDto;

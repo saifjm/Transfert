@@ -5,8 +5,6 @@ import com.smi.mstr.transfer.application.mapper.TransferOrderDataMapper;
 import com.smi.mstr.transfer.domain.entity.MvtTrOperation;
 import com.smi.mstr.transfer.domain.entity.TrOperationEvent;
 import com.smi.mstr.transfer.domain.enums.*;
-import com.smi.mstr.transfer.domain.repository.MvtTrOperationRepository;
-import com.smi.mstr.transfer.domain.repository.TrOperationEventRepository;
 import com.smi.mstr.transfer.dto.CreateTransferOrderRequest;
 import com.smi.mstr.transfer.dto.SaveTransferDraftRequest;
 import com.smi.mstr.transfer.dto.TransferOperationResponse;
